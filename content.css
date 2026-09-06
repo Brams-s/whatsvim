@@ -1,0 +1,301 @@
+#whatsvim-sentinel {
+  position: fixed !important;
+  left: -10000px !important;
+  top: 0 !important;
+  width: 1px !important;
+  height: 1px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+#whatsvim-mode,
+#whatsvim-toast {
+  position: fixed;
+  left: 12px;
+  z-index: 2147483646;
+  border: 1px solid rgba(170, 170, 170, 0.35);
+  border-radius: 6px;
+  background: rgba(17, 17, 17, 0.88);
+  color: #d7d7d7;
+  font: 600 11px/1.3 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  letter-spacing: 0.08em;
+  pointer-events: none;
+  user-select: none;
+}
+
+#whatsvim-mode {
+  bottom: 12px;
+  padding: 5px 8px;
+  transition: opacity 120ms ease;
+}
+
+#whatsvim-mode[data-mode="insert"] {
+  opacity: 0;
+}
+
+#whatsvim-mode[data-context="message"] {
+  border-color: rgba(139, 213, 202, 0.65);
+  color: #8bd5ca;
+}
+
+/* Insert mode adds a clear boundary to the focused chat composer without
+ * changing its box size or replacing WhatsApp's own focus treatment. */
+.whatsvim-insert-composer {
+  box-shadow: 0 0 0 2px #00a884 !important;
+}
+
+@media (prefers-color-scheme: dark) {
+  .whatsvim-insert-composer {
+    box-shadow: 0 0 0 2px #6fd3c0 !important;
+  }
+}
+
+#side.whatsvim-active-pane,
+#main.whatsvim-active-pane {
+  /* A single inset rail marks the active split without framing the shell. */
+  box-shadow: inset 3px 0 0 rgba(139, 213, 202, 0.92);
+}
+
+/* #main's full-bleed children can cover a shadow, so give it the same single
+ * rail as a small, non-interactive overlay. */
+#main.whatsvim-active-pane {
+  position: relative;
+  box-shadow: inset 3px 0 0 rgba(139, 213, 202, 0.92) !important;
+}
+
+#main.whatsvim-active-pane::after {
+  position: absolute;
+  z-index: 2;
+  inset: 12px auto 12px 0;
+  width: 3px;
+  background: rgba(139, 213, 202, 0.92);
+  content: "";
+  pointer-events: none;
+}
+
+#side [role="row"].whatsvim-selected-chat {
+  border-radius: 4px;
+  box-shadow: inset 3px 0 0 #8bd5ca;
+}
+
+#main [role="row"].whatsvim-selected-message {
+  scroll-margin-block: 96px;
+  position: relative;
+  isolation: isolate;
+}
+
+/* WhatsApp bubbles vary in nesting and width. Tint the stable row instead,
+ * then anchor a compact cursor to its full rendered height. */
+#main [role="row"].whatsvim-selected-message::before {
+  position: absolute;
+  z-index: 1;
+  inset: 3px 8px;
+  border-left: 4px solid rgba(139, 213, 202, 1);
+  border-radius: 6px;
+  background: rgba(139, 213, 202, 0.14);
+  content: "";
+  pointer-events: none;
+}
+
+[role="dialog"] .whatsvim-selected-reaction {
+  border-radius: 999px;
+  outline: 2px solid rgba(139, 213, 202, 0.95) !important;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px rgba(139, 213, 202, 0.14) !important;
+}
+
+#whatsvim-toast {
+  bottom: 44px;
+  max-width: min(360px, calc(100vw - 24px));
+  padding: 7px 9px;
+  letter-spacing: normal;
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+#whatsvim-toast[data-visible="true"] {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+#whatsvim-help {
+  position: fixed;
+  inset: 0;
+  box-sizing: border-box;
+  z-index: 2147483647;
+  display: none;
+  margin: 0;
+  max-width: none;
+  max-height: none;
+  border: 0;
+  place-items: center;
+  padding: clamp(16px, 3vw, 40px);
+  background: rgba(0, 0, 0, 0.55);
+  color: #e8e8e8;
+  font: 14px/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+#whatsvim-help[open] {
+  display: grid;
+}
+
+#whatsvim-help-panel {
+  width: min(1040px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+  border: 1px solid rgba(139, 213, 202, 0.32);
+  border-radius: 16px;
+  background: rgba(18, 18, 18, 0.97);
+  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.58);
+  padding: clamp(22px, 4vw, 48px);
+}
+
+#whatsvim-help-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+
+#whatsvim-help-title {
+  margin: 0;
+  color: #fff;
+  font-size: clamp(22px, 3vw, 32px);
+  letter-spacing: -0.03em;
+}
+
+#whatsvim-help-close {
+  border: 0;
+  border: 1px solid rgba(139, 213, 202, 0.4);
+  border-radius: 999px;
+  background: rgba(139, 213, 202, 0.12);
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  padding: 7px 12px;
+}
+
+#whatsvim-help-close:focus-visible {
+  outline: 2px solid #8bd5ca;
+  outline-offset: 3px;
+}
+
+#whatsvim-help-subtitle {
+  margin: 0 0 28px;
+  color: #b6c4c1;
+  font-size: 15px;
+}
+
+#whatsvim-help-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 14px;
+}
+
+.whatsvim-help-group {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  padding: 16px;
+}
+
+.whatsvim-help-group h3 {
+  margin: 0 0 10px;
+  color: #8bd5ca;
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.whatsvim-help-row {
+  display: grid;
+  grid-template-columns: minmax(104px, 0.8fr) 1.2fr;
+  gap: 10px;
+  padding: 9px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.whatsvim-help-row kbd {
+  color: #dff7f1;
+  font: 600 12px/1.35 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+#whatsvim-help-note {
+  margin: 24px 0 0;
+  color: #aaa;
+  font-size: 12px;
+}
+
+@media (forced-colors: active) {
+  .whatsvim-insert-composer {
+    /* Use the platform focus color when custom colors are unavailable. */
+    outline: 2px solid Highlight !important;
+    outline-offset: 2px;
+    box-shadow: none !important;
+    forced-color-adjust: none;
+  }
+
+  [role="dialog"] .whatsvim-selected-reaction,
+  #side [role="row"].whatsvim-selected-chat,
+  #side.whatsvim-active-pane,
+  #main.whatsvim-active-pane {
+    border-left: 3px solid Highlight !important;
+    outline: 0 !important;
+    box-shadow: none !important;
+    forced-color-adjust: none;
+  }
+
+  #main [role="row"].whatsvim-selected-message::before {
+    border-left-color: Highlight;
+    background: transparent;
+  }
+
+  #whatsvim-help-close:focus-visible {
+    outline-color: Highlight;
+  }
+
+  #whatsvim-help-panel,
+  .whatsvim-help-group,
+  #whatsvim-help-close {
+    border-color: CanvasText;
+  }
+
+  #main.whatsvim-active-pane::after {
+    background: Highlight;
+  }
+
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #whatsvim-mode,
+  #whatsvim-toast {
+    transition: none;
+  }
+}
+
+@media (max-width: 560px) {
+  .whatsvim-help-row {
+    grid-template-columns: 1fr;
+    gap: 3px;
+  }
+}
+
+/* whatsapp-slim also sees the nested #side inside WhatsApp's Alt+K search
+ * modal. Undo only those two rail rules so the popup remains usable while the
+ * real narrow-window sidebar stays collapsed. */
+@media (max-width: 1100px) {
+  html body [role="dialog"] div:has(> div#side) {
+    flex: 1 1 auto !important;
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: none !important;
+  }
+
+  html body [role="dialog"] #side > div:first-child {
+    display: block !important;
+  }
+}

@@ -1,0 +1,2109 @@
+(() => {
+  "use strict";
+
+  if (globalThis.__whatsvimNavigationInstalled) return;
+  globalThis.__whatsvimNavigationInstalled = true;
+
+  const keymap = globalThis.WhatsVimKeymap;
+  if (!keymap) return;
+
+  const extensionManifest = globalThis.chrome?.runtime?.getManifest?.();
+  const buildVersion = extensionManifest?.version_name || extensionManifest?.version || "";
+  const selectedMessageClass = "whatsvim-selected-message";
+  const selectedChatClass = "whatsvim-selected-chat";
+  const activePaneClass = "whatsvim-active-pane";
+  const selectedReactionClass = "whatsvim-selected-reaction";
+
+  const ids = Object.freeze({
+    sentinel: "whatsvim-sentinel",
+    mode: "whatsvim-mode",
+    toast: "whatsvim-toast",
+    help: "whatsvim-help",
+    helpPanel: "whatsvim-help-panel",
+    helpClose: "whatsvim-help-close",
+  });
+
+  // These are production selectors already used by the extension. Keep DOM
+  // discovery confined to WhatsApp's two navigation roots; broad document
+  // searches can otherwise select controls in an overlay or sidebar popup.
+  const whatsappSelectors = Object.freeze({
+    chat: Object.freeze({
+      root: "#pane-side",
+      primary: '[role="row"][data-testid^="list-item-"]',
+      legacyCell: '[data-testid="cell-frame-container"]',
+      legacyRow: '[role="row"], [role="listitem"]',
+      cell: '[data-testid="cell-frame-container"]',
+      title: '[data-testid="cell-frame-title"]',
+    }),
+    message: Object.freeze({
+      root: "#main",
+      row: '[role="row"]',
+      container: '[data-testid="msg-container"]',
+    }),
+  });
+
+  const helpGroups = Object.freeze([
+    ["Panes", [["h / l", "select chat list / message pane"], ["j / k", "move in the selected pane"], ["Shift+J / Shift+K", "move between chats"], ["gg / G", "first / last chat"]]],
+    ["Messages", [["Enter / i / a", "focus the composer"], ["r", "reply to selected message"], ["Shift+R / e", "react / edit"], ["l / o", "open selected media (l otherwise selects the message pane)"], ["Space", "expand Read more on the selected message"], ["I", "compose at the newest message"]]],
+    ["Overlays & search", [["h / j / k / l", "move in reaction or media overlays"], ["/", "focus WhatsApp search"], ["Esc / Ctrl+[", "close, clear selection, or leave Insert mode"], ["?", "toggle this reference"]]],
+  ]);
+
+  let mode = "normal";
+  let activePane = "chat";
+  let pendingG = false;
+  let pendingGTimer = 0;
+  let toastTimer = 0;
+  let helpOpen = false;
+  let helpReturnMode = "normal";
+  let helpReturnFocus = null;
+  let helpListenersInstalled = false;
+  let sentinel = null;
+  let modeBadge = null;
+  let toast = null;
+  let help = null;
+  let activeChatRow = null;
+  let activeMessageRow = null;
+  let activeMessageKey = "";
+  let activeReactionChoice = null;
+  let messageModeReturnRow = null;
+  let messageModeReturnKey = "";
+  let messageReturnRestoreSerial = 0;
+  let pendingMessageReturnRestore = 0;
+  let mediaReturnRow = null;
+  let mediaReturnKey = "";
+  let mediaReturnScroller = null;
+  let mediaReturnScrollTop = null;
+  let mediaReturnScrollLeft = null;
+  let mediaRestoreSerial = 0;
+  let messageOverlayKind = "";
+  let messageOverlayCloseSerial = 0;
+  let reactionSearchFocusSerial = 0;
+  let reactionSearchFocusUntil = 0;
+  let normalModeLockUntil = 0;
+  let messageModeLockUntil = 0;
+  let pendingChatActivation = null;
+  const heldPaneNavigationKeys = new Set();
+
+  function createElement(tagName, attributes = {}, text = "") {
+    const element = document.createElement(tagName);
+    for (const [name, value] of Object.entries(attributes)) {
+      if (name === "className") element.className = value;
+      else element.setAttribute(name, value);
+    }
+    if (text) element.textContent = text;
+    return element;
+  }
+
+  function mountUi() {
+    if (!document.body) return false;
+
+    sentinel = document.getElementById(ids.sentinel);
+    if (!sentinel) {
+      // This is a programmatic command target, not an editor. The visible live
+      // mode status communicates the current command state to assistive technology.
+      sentinel = createElement("div", {
+        id: ids.sentinel,
+        tabindex: "-1",
+      });
+      document.body.append(sentinel);
+    }
+
+    modeBadge = document.getElementById(ids.mode);
+    if (!modeBadge) {
+      modeBadge = createElement("div", {
+        id: ids.mode,
+        role: "status",
+        "aria-live": "polite",
+      }, "NORMAL");
+      document.body.append(modeBadge);
+    }
+
+    toast = document.getElementById(ids.toast);
+    if (!toast) {
+      toast = createElement("div", {
+        id: ids.toast,
+        role: "status",
+        "aria-live": "polite",
+      });
+      document.body.append(toast);
+    }
+
+    help = document.getElementById(ids.help);
+    if (!help) {
+      help = createElement("dialog", {
+        id: ids.help,
+        "aria-labelledby": "whatsvim-help-title",
+        "aria-describedby": "whatsvim-help-subtitle",
+      });
+      const panel = createElement("section", { id: ids.helpPanel });
+      const header = createElement("header", { id: "whatsvim-help-header" });
+      const title = createElement("h2", { id: "whatsvim-help-title" }, "Keyboard reference");
+      const close = createElement("button", {
+        id: ids.helpClose,
+        type: "button",
+        "aria-label": "Close keyboard shortcut help",
+      }, "Close · Esc");
+      header.append(title, close);
+
+      const subtitle = createElement("p", { id: "whatsvim-help-subtitle" }, "Navigate WhatsApp without leaving the keyboard.");
+      const groups = createElement("div", { id: "whatsvim-help-groups" });
+      for (const [name, rows] of helpGroups) {
+        const group = createElement("section", { className: "whatsvim-help-group", "aria-labelledby": `whatsvim-help-${name.toLowerCase().replaceAll(" ", "-")}` });
+        group.append(createElement("h3", { id: `whatsvim-help-${name.toLowerCase().replaceAll(" ", "-")}` }, name));
+        for (const [keys, description] of rows) {
+          const row = createElement("div", { className: "whatsvim-help-row" });
+          row.append(createElement("kbd", {}, keys), createElement("span", {}, description));
+          group.append(row);
+        }
+        groups.append(group);
+      }
+      panel.append(
+        header,
+        subtitle,
+        groups,
+        createElement(
+          "p",
+          { id: "whatsvim-help-note" },
+          "Mapped keys are handled in Normal mode. Editors use Insert mode; Ctrl+V in Normal mode first focuses the composer."
+        )
+      );
+      help.append(panel);
+      document.body.append(help);
+
+    }
+
+    if (!helpListenersInstalled) {
+      help.addEventListener("keydown", onHelpKeyDown);
+      help.addEventListener("click", (event) => {
+        if (event.target === help) setHelpOpen(false);
+      });
+      help.addEventListener("cancel", (event) => {
+        event.preventDefault();
+        setHelpOpen(false);
+      });
+      help.addEventListener("close", finishHelpClose);
+      help.querySelector(`#${ids.helpClose}`)?.addEventListener("click", () => setHelpOpen(false));
+      helpListenersInstalled = true;
+    }
+
+    updateModeBadge();
+    modeBadge.dataset.version = buildVersion;
+    return true;
+  }
+
+  function updateModeBadge() {
+    if (!modeBadge) return;
+    const publicMode = mode === "insert" ? "insert" : "normal";
+    modeBadge.dataset.mode = publicMode;
+    modeBadge.dataset.context = mode;
+    modeBadge.dataset.pane = activePane;
+    modeBadge.textContent = `${publicMode.toUpperCase()} · ${activePane === "chat" ? "CHATS" : "MESSAGES"}`;
+  }
+
+  function isEditable(target) {
+    if (!(target instanceof Element) || target === sentinel) return false;
+    if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) {
+      return !target.disabled;
+    }
+    if (target.isContentEditable) return true;
+    const editor = target.closest('[contenteditable]:not([contenteditable="false"]), [role="textbox"]');
+    return editor instanceof HTMLElement;
+  }
+
+  function isVisible(element) {
+    if (!(element instanceof Element)) return false;
+    const style = getComputedStyle(element);
+    if (style.display === "none" || style.visibility === "hidden") return false;
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+
+  function focusSentinel() {
+    if (mode === "insert" || helpOpen || !document.hasFocus()) return;
+    if (mode === "message" && messageOverlayKind === "reaction" && reactionPicker()) return;
+    if (!mountUi()) return;
+    if (document.activeElement !== sentinel) {
+      sentinel.focus({ preventScroll: true });
+    }
+  }
+
+  function setMode(nextMode, options = {}) {
+    mode = ["insert", "message"].includes(nextMode) ? nextMode : "normal";
+    updateModeBadge();
+    syncComposerInsertIndicator();
+    if (mode !== "insert" && options.focus !== false) {
+      setTimeout(focusSentinel, 0);
+    }
+  }
+
+  function syncComposerInsertIndicator() {
+    document.querySelectorAll(".whatsvim-insert-composer").forEach((element) => {
+      element.classList.remove("whatsvim-insert-composer");
+    });
+    const editor = composer();
+    if (mode === "insert" && editor === document.activeElement) {
+      editor.classList.add("whatsvim-insert-composer");
+    }
+  }
+
+  function keepNormalFocus(duration = 500) {
+    messageModeLockUntil = 0;
+    normalModeLockUntil = performance.now() + duration;
+    setMode("normal", { focus: false });
+    for (const delay of [0, 80, 200, duration]) {
+      setTimeout(() => {
+        if (mode === "normal" && performance.now() <= normalModeLockUntil + 30) {
+          focusSentinel();
+        }
+      }, delay);
+    }
+  }
+
+  function keepMessageFocus(duration = 500) {
+    normalModeLockUntil = 0;
+    messageModeLockUntil = performance.now() + duration;
+    setMode("message", { focus: false });
+    for (const delay of [0, 80, 200, duration]) {
+      setTimeout(() => {
+        if (mode === "message" && performance.now() <= messageModeLockUntil + 30) {
+          focusSentinel();
+        }
+      }, delay);
+    }
+  }
+
+  function lockedCommandMode() {
+    const now = performance.now();
+    if (now < messageModeLockUntil) return "message";
+    if (now < normalModeLockUntil) return "normal";
+    return null;
+  }
+
+  function flash(message) {
+    if (!mountUi()) return;
+    clearTimeout(toastTimer);
+    toast.textContent = message;
+    toast.dataset.visible = "true";
+    toastTimer = setTimeout(() => {
+      if (toast) toast.dataset.visible = "false";
+    }, 1500);
+  }
+
+  function setHelpOpen(open) {
+    if (!mountUi()) return;
+    const close = help.querySelector(`#${ids.helpClose}`);
+    const dialogOpen = help.open === true;
+    if (open) {
+      if (!helpOpen) {
+        helpOpen = true;
+        help.dataset.open = "true";
+        helpReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        helpReturnMode = mode === "message" ? "message" : "normal";
+        setMode(helpReturnMode, { focus: false });
+      }
+      if (!help.open) {
+        try {
+          help.showModal();
+          if (!help.open) {
+            finishHelpClose();
+            return;
+          }
+        } catch {
+          finishHelpClose();
+          return;
+        }
+      }
+      close?.focus({ preventScroll: true });
+    } else {
+      if (!helpOpen && !dialogOpen) return;
+      if (dialogOpen) {
+        help.close();
+        if (helpOpen) finishHelpClose();
+      } else {
+        finishHelpClose();
+      }
+    }
+  }
+
+  function finishHelpClose() {
+    const wasOpen = helpOpen;
+    helpOpen = false;
+    help.dataset.open = "false";
+    if (!wasOpen) return;
+    setMode(helpReturnMode, { focus: false });
+    const returnFocus = helpReturnFocus;
+    helpReturnFocus = null;
+    if (returnFocus?.isConnected) {
+      returnFocus.focus({ preventScroll: true });
+    } else {
+      focusSentinel();
+    }
+  }
+
+  function onHelpKeyDown(event) {
+    if (!helpOpen) return;
+    if (event.key === "Escape") {
+      consume(event);
+      setHelpOpen(false);
+      return;
+    }
+    if (event.key === "?" || (event.ctrlKey && event.key === "[")) {
+      consume(event);
+      setHelpOpen(false);
+      return;
+    }
+    if (event.key === "Tab") {
+      // The help currently has one control. Keeping Tab here makes this a
+      // modal rather than allowing focus to escape into WhatsApp.
+      consume(event);
+      help.querySelector(`#${ids.helpClose}`)?.focus({ preventScroll: true });
+      return;
+    }
+    // The modal owns keyboard interaction while it is open; do not let
+    // WhatsApp's page-level shortcuts receive keys from its close button.
+    consume(event);
+  }
+
+  function consume(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+  }
+
+  function dispatchWhatsAppShortcut({ key, code, ctrlKey = false, altKey = false, shiftKey = false }) {
+    const target = document.activeElement instanceof Element ? document.activeElement : document.body;
+    if (!target) return false;
+    const init = {
+      key,
+      code,
+      ctrlKey,
+      altKey,
+      shiftKey,
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+    };
+    target.dispatchEvent(new KeyboardEvent("keydown", init));
+    target.dispatchEvent(new KeyboardEvent("keyup", init));
+    return true;
+  }
+
+  function normalizedText(value) {
+    return (value || "").replace(/\s+/g, " ").trim().toLocaleLowerCase();
+  }
+
+  function uniqueOutermost(elements, root, marker) {
+    const unique = [...new Set(elements)].filter((element) => (
+      element instanceof Element && root.contains(element) && isVisible(element)
+    ));
+    return unique.filter((element) => !unique.some((other) => (
+      other !== element && other.contains(element) && marker(other)
+    )));
+  }
+
+  function chatRows() {
+    const pane = document.querySelector(whatsappSelectors.chat.root);
+    if (!pane) return [];
+
+    const preferred = uniqueOutermost(
+      [...pane.querySelectorAll(whatsappSelectors.chat.primary)]
+        .filter((row) => row.querySelector(whatsappSelectors.chat.cell)),
+      pane,
+      (row) => row.matches(whatsappSelectors.chat.primary)
+    );
+    if (preferred.length > 0) return preferred;
+
+    const legacy = [...pane.querySelectorAll(whatsappSelectors.chat.legacyCell)]
+      .map((cell) => cell.closest(whatsappSelectors.chat.legacyRow) || cell)
+      .filter((candidate) => candidate.querySelector?.(whatsappSelectors.chat.cell) || candidate.matches?.(whatsappSelectors.chat.legacyCell));
+    return uniqueOutermost(legacy, pane, (candidate) => (
+      candidate.matches(whatsappSelectors.chat.legacyRow) || candidate.matches(whatsappSelectors.chat.legacyCell)
+    ));
+  }
+
+  function paneRoot(pane) {
+    return document.querySelector(pane === "chat" ? "#side" : whatsappSelectors.message.root);
+  }
+
+  function suppressDuplicatePaneNavigation(event, action) {
+    if (![
+      "next-chat",
+      "previous-chat",
+      "next-message",
+      "previous-message",
+    ].includes(action)) return false;
+    const key = event.code || event.key;
+    // WhatsApp can receive duplicate keydowns for one physical hold. A keyup
+    // releases this guard, so deliberate repeated presses still navigate.
+    if (heldPaneNavigationKeys.has(key) && !event.repeat) return true;
+    heldPaneNavigationKeys.add(key);
+    return false;
+  }
+
+  function setActivePane(nextPane, { announce = true } = {}) {
+    const pane = nextPane === "chat" ? "chat" : "message";
+    const root = paneRoot(pane);
+    if (!isVisible(root)) {
+      if (announce) flash(pane === "chat" ? "Chat list is not available" : "Message pane is not available");
+      return false;
+    }
+    document.querySelectorAll(`.${activePaneClass}`).forEach((element) => element.classList.remove(activePaneClass));
+    root.classList.add(activePaneClass);
+    activePane = pane;
+    updateModeBadge();
+    return true;
+  }
+
+  function selectChatRow(row) {
+    document.querySelectorAll(`.${selectedChatClass}`).forEach((selected) => {
+      if (selected !== row) selected.classList.remove(selectedChatClass);
+    });
+    if (row instanceof HTMLElement) row.classList.add(selectedChatClass);
+  }
+
+  function clearChatSelection() {
+    activeChatRow = null;
+    document.querySelectorAll(`.${selectedChatClass}`).forEach((row) => row.classList.remove(selectedChatClass));
+  }
+
+  function chatRow(element) {
+    if (!(element instanceof Element)) return null;
+    const pane = document.querySelector(whatsappSelectors.chat.root);
+    if (!pane?.contains(element)) return null;
+    const row = element.closest(whatsappSelectors.chat.legacyRow);
+    return row instanceof HTMLElement && pane.contains(row) && row.querySelector(whatsappSelectors.chat.cell)
+      ? row
+      : null;
+  }
+
+  function currentChatLabel() {
+    const header = document.querySelector("#main header");
+    if (!header) return "";
+
+    const chatTitle = header.querySelector('[data-testid="conversation-info-header-chat-title"]');
+    if (chatTitle) return normalizedText(chatTitle.textContent);
+
+    const titled = [...header.querySelectorAll("[title]")].find(isVisible);
+    return normalizedText(titled?.getAttribute("title") || titled?.textContent || header.textContent);
+  }
+
+  function rowLabels(row) {
+    const primary = normalizedText(
+      row.querySelector(whatsappSelectors.chat.title)?.textContent
+    );
+    const titled = [...row.querySelectorAll("[title]")]
+      .map((element) => normalizedText(element.getAttribute("title") || element.textContent))
+      .filter(Boolean);
+    return [...new Set([primary, ...titled].filter(Boolean))];
+  }
+
+  function currentChatIndex(rows) {
+    const trackedIndex = rows.indexOf(activeChatRow);
+    if (trackedIndex >= 0) return trackedIndex;
+
+    const selectedIndex = rows.findIndex((row) => {
+      return (
+        row.matches('[aria-selected="true"], [aria-current="true"], [data-selected="true"]') ||
+        row.querySelector('[aria-selected="true"], [aria-current="true"], [data-selected="true"]')
+      );
+    });
+    if (selectedIndex >= 0) return selectedIndex;
+
+    const label = currentChatLabel();
+    if (!label) return -1;
+    // Text is only a legacy localization fallback. Ambiguous labels must not
+    // advance an unrelated chat row.
+    const matches = rows.filter((row) => rowLabels(row).includes(label));
+    return matches.length === 1 ? rows.indexOf(matches[0]) : -1;
+  }
+
+  function chatActivationObserved(row) {
+    if (!(row instanceof HTMLElement) || !row.isConnected) return false;
+    if (row.matches('[aria-selected="true"], [aria-current="true"], [data-selected="true"]')) return true;
+    if (row.querySelector('[aria-selected="true"], [aria-current="true"], [data-selected="true"]')) return true;
+    const label = currentChatLabel();
+    return Boolean(label && rowLabels(row).includes(label));
+  }
+
+  async function activateChat(row) {
+    if (!(row instanceof HTMLElement)) return false;
+
+    const target = row.querySelector('[data-testid="cell-frame-container"]') || row;
+    if (!(target instanceof HTMLElement)) return false;
+
+    clearMessageSelection();
+    clearMessageReturn();
+    row.scrollIntoView({ block: "nearest" });
+    keepNormalFocus();
+
+    const rect = target.getBoundingClientRect();
+    target.dispatchEvent(new MouseEvent("mousedown", {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      view: window,
+      button: 0,
+      buttons: 1,
+      clientX: rect.left + rect.width / 2,
+      clientY: rect.top + rect.height / 2,
+    }));
+    // Synthetic events are always untrusted. Do not equate dispatch success
+    // with a WhatsApp action: require an observable selection/header change.
+    if (await waitForPredicate(() => chatActivationObserved(row), { root: document.querySelector(whatsappSelectors.chat.root), timeout: 280 })) {
+      activeChatRow = row;
+      selectChatRow(row);
+      setActivePane("chat", { announce: false });
+      return true;
+    }
+
+    // Some controls activate on click rather than mousedown. Do not send a
+    // second mousedown; this bounded mouseup/click fallback avoids duplicate
+    // activation when the primary event was merely slow to render.
+    const fallbackInit = mouseEventInit(target);
+    for (const type of ["mouseup", "click"]) target.dispatchEvent(new MouseEvent(type, fallbackInit));
+    if (await waitForPredicate(() => chatActivationObserved(row), { root: document.querySelector(whatsappSelectors.chat.root), timeout: 280 })) {
+      activeChatRow = row;
+      selectChatRow(row);
+      setActivePane("chat", { announce: false });
+      return true;
+    }
+    return false;
+  }
+
+  async function navigateChat(direction) {
+    if (pendingChatActivation) await pendingChatActivation;
+    const rows = chatRows();
+    const current = currentChatIndex(rows);
+    const target = current >= 0
+      ? rows[current + direction]
+      : direction > 0
+        ? rows[0]
+        : rows.at(-1);
+    if (target) {
+      const activation = activateChat(target);
+      pendingChatActivation = activation;
+      const activated = await activation;
+      if (pendingChatActivation === activation) pendingChatActivation = null;
+      if (activated) return true;
+    }
+
+    flash(rows.length > 0 ? "End of chat list" : "Chat list is not available");
+    return false;
+  }
+
+  async function selectBoundaryChat(edge) {
+    const pane = document.querySelector(whatsappSelectors.chat.root);
+    if (!(pane instanceof HTMLElement)) {
+      flash("Chat list is not available");
+      return;
+    }
+
+    pane.scrollTo({ top: edge === "first" ? 0 : pane.scrollHeight, behavior: "auto" });
+    const target = await waitForPredicate(() => {
+      const rows = chatRows();
+      return edge === "first" ? rows[0] : rows.at(-1);
+    }, { root: pane, timeout: 700, poll: true });
+    if (!target || !await activateChat(target)) flash("No visible chats found");
+  }
+
+  function messageRow(element) {
+    if (!(element instanceof Element)) return null;
+    const main = document.querySelector(whatsappSelectors.message.root);
+    if (!main?.contains(element)) return null;
+    const row = element.closest(whatsappSelectors.message.row);
+    return row instanceof HTMLElement && main.contains(row) && row.querySelector(whatsappSelectors.message.container)
+      ? row
+      : null;
+  }
+
+  function messageRows() {
+    const main = document.querySelector(whatsappSelectors.message.root);
+    if (!main) return [];
+    return uniqueOutermost(
+      [...main.querySelectorAll(whatsappSelectors.message.row)]
+        .filter((row) => row.querySelector(whatsappSelectors.message.container)),
+      main,
+      (row) => row.matches(whatsappSelectors.message.row) && row.querySelector(whatsappSelectors.message.container)
+    );
+  }
+
+  function messageContainer(row) {
+    const container = row?.querySelector?.(whatsappSelectors.message.container);
+    return container instanceof HTMLElement ? container : null;
+  }
+
+  function messageKey(row) {
+    if (!(row instanceof Element)) return "";
+    const root = row.querySelector('[data-id], [data-testid^="conv-msg-"]');
+    return root?.getAttribute("data-id") || root?.getAttribute("data-testid") || "";
+  }
+
+  function clearMessageSelection() {
+    clearReactionFocus();
+    clearMediaReturn();
+    document.querySelectorAll(`.${selectedMessageClass}`).forEach((row) => {
+      row.classList.remove(selectedMessageClass);
+      row.removeAttribute("aria-current");
+    });
+    activeMessageRow = null;
+    activeMessageKey = "";
+    messageOverlayKind = "";
+  }
+
+  function clearMessageReturn() {
+    messageReturnRestoreSerial += 1;
+    messageModeReturnRow = null;
+    messageModeReturnKey = "";
+  }
+
+  function captureMessageReturn(row) {
+    messageReturnRestoreSerial += 1;
+    messageModeReturnRow = row instanceof HTMLElement ? row : null;
+    messageModeReturnKey = messageKey(row);
+  }
+
+  function clearMediaReturn() {
+    mediaRestoreSerial += 1;
+    mediaReturnRow = null;
+    mediaReturnKey = "";
+    mediaReturnScroller = null;
+    mediaReturnScrollTop = null;
+    mediaReturnScrollLeft = null;
+  }
+
+  function selectMessage(row, options = {}) {
+    if (!(row instanceof HTMLElement) || !messageContainer(row)) return false;
+
+    document.querySelectorAll(`.${selectedMessageClass}`).forEach((selected) => {
+      if (selected !== row) {
+        selected.classList.remove(selectedMessageClass);
+        selected.removeAttribute("aria-current");
+      }
+    });
+    activeMessageRow = row;
+    activeMessageKey = messageKey(row);
+    row.classList.add(selectedMessageClass);
+    row.setAttribute("aria-current", "true");
+    if (options.scroll !== false) row.scrollIntoView({ block: "center", inline: "nearest" });
+    setActivePane("message", { announce: false });
+    if (options.mode !== false) keepMessageFocus();
+    return true;
+  }
+
+  function selectedMessageRow() {
+    if (activeMessageRow?.isConnected && messageContainer(activeMessageRow)) return activeMessageRow;
+    if (activeMessageKey) {
+      const match = messageRows().find((row) => messageKey(row) === activeMessageKey);
+      if (match) {
+        activeMessageRow = match;
+        match.classList.add(selectedMessageClass);
+        match.setAttribute("aria-current", "true");
+        return match;
+      }
+    }
+    return null;
+  }
+
+  function enterMessageMode() {
+    const rows = messageRows();
+    const current = selectedMessageRow();
+    const target = current && rows.includes(current) ? current : rows.at(-1);
+    if (!target || !selectMessage(target)) {
+      flash("Open a chat with messages before selecting a message");
+    }
+  }
+
+  function initializeMessageCursor() {
+    const current = selectedMessageRow();
+    if (current) return true;
+    const latest = messageRows().at(-1);
+    if (!latest || !selectMessage(latest, { mode: false })) {
+      flash("No messages are available");
+      return false;
+    }
+    return true;
+  }
+
+  async function selectMessagePane() {
+    const normalContext = mode === "normal";
+    const activation = pendingChatActivation;
+    if (activation && !await activation) return false;
+    if (!normalContext) return setActivePane("message");
+    const ready = await waitForPredicate(() => {
+      const root = paneRoot("message");
+      return isVisible(root) && messageRows().length > 0 ? true : null;
+    }, { root: document.body, timeout: 700, poll: true });
+    if (!ready || !setActivePane("message", { announce: false }) || !initializeMessageCursor()) {
+      flash("Message pane is not available");
+      return false;
+    }
+    keepNormalFocus();
+    return true;
+  }
+
+  function messageScroller(row) {
+    let node = row?.parentElement;
+    while (node && node.id !== "main") {
+      const style = getComputedStyle(node);
+      if (
+        node instanceof HTMLElement &&
+        node.scrollHeight > node.clientHeight + 4 &&
+        /(auto|scroll)/.test(style.overflowY)
+      ) {
+        return node;
+      }
+      node = node.parentElement;
+    }
+    return null;
+  }
+
+  function wait(milliseconds) {
+    return new Promise((resolve) => setTimeout(resolve, milliseconds));
+  }
+
+  function waitForPredicate(read, { root = document.body, timeout = 900, poll = false } = {}) {
+    return new Promise((resolve) => {
+      let finished = false;
+      let observer = null;
+      let timer = 0;
+      let pollTimer = 0;
+      const finish = (value) => {
+        if (finished) return;
+        finished = true;
+        observer?.disconnect();
+        clearTimeout(timer);
+        clearInterval(pollTimer);
+        resolve(value || null);
+      };
+      const check = () => {
+        try {
+          const value = read();
+          if (value) finish(value);
+        } catch {
+          // A virtualized root can be replaced while we are waiting. Treat it
+          // as not-ready and allow the bounded timeout/poll to settle safely.
+        }
+      };
+      check();
+      if (finished) return;
+      if (root instanceof Node && root.isConnected) {
+        observer = new MutationObserver(check);
+        observer.observe(root, { childList: true, subtree: true, attributes: true });
+      }
+      // Scrolling need not mutate the subtree, so virtual-list callers opt in
+      // to this small polling fallback. It is always cleaned up on completion.
+      if (poll) pollTimer = setInterval(check, 50);
+      timer = setTimeout(() => finish(null), timeout);
+    });
+  }
+
+  async function waitForValue(read, timeout = 900) {
+    return waitForPredicate(read, { timeout, poll: true });
+  }
+
+  async function navigateMessage(direction) {
+    if (reactionPicker()) await closeReactionPicker();
+
+    let rows = messageRows();
+    let current = selectedMessageRow();
+    if (!current) {
+      const latest = rows.at(-1);
+      if (latest && selectMessage(latest)) return;
+      flash("No messages are available");
+      return;
+    }
+
+    let index = rows.indexOf(current);
+    let target = index >= 0 ? rows[index + direction] : null;
+    if (target && selectMessage(target)) return;
+
+    const key = activeMessageKey;
+    const scroller = messageScroller(current);
+    if (scroller) {
+      const renderedKeys = new Set(rows.map(messageKey).filter(Boolean));
+      scroller.scrollBy({ top: direction * Math.max(120, scroller.clientHeight * 0.75), behavior: "auto" });
+      await waitForPredicate(() => {
+        const rendered = messageRows();
+        return rendered.some((row) => {
+          const candidateKey = messageKey(row);
+          return candidateKey && candidateKey !== key && !renderedKeys.has(candidateKey);
+        }) ? true : null;
+      }, { root: scroller, timeout: 700, poll: true });
+      rows = messageRows();
+      index = rows.findIndex((row) => messageKey(row) === key);
+      target = index >= 0
+        ? rows[index + direction]
+        : direction < 0
+          ? rows.at(-1)
+          : rows[0];
+      if (target && messageKey(target) !== key && selectMessage(target)) return;
+    }
+
+    flash(direction > 0 ? "Newest message reached" : "Oldest loaded message reached");
+    focusSentinel();
+  }
+
+  function mouseEventInit(element) {
+    const rect = element.getBoundingClientRect();
+    return {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      view: window,
+      button: 0,
+      clientX: rect.left + rect.width / 2,
+      clientY: rect.top + rect.height / 2,
+    };
+  }
+
+  function triggerMouse(element) {
+    if (!(element instanceof HTMLElement) || !element.isConnected) return false;
+    const init = mouseEventInit(element);
+    for (const type of ["mousedown", "mouseup", "click"]) {
+      element.dispatchEvent(new MouseEvent(type, init));
+    }
+    return true;
+  }
+
+  async function revealMessageControls(row = selectedMessageRow()) {
+    const message = messageContainer(row);
+    if (!message) return null;
+    row.scrollIntoView({ block: "center", inline: "nearest" });
+    const init = mouseEventInit(message);
+    for (const type of ["pointerover", "pointerenter", "mouseover", "mouseenter", "mousemove"]) {
+      const EventType = type.startsWith("pointer") ? PointerEvent : MouseEvent;
+      message.dispatchEvent(new EventType(type, init));
+    }
+    await wait(80);
+    return message;
+  }
+
+  function visibleMenuItem(action) {
+    const expected = normalizedText(action);
+    const matches = [...document.querySelectorAll('[role="menu"] [role="menuitem"]')].filter((item) => {
+      if (!isVisible(item) || !item.closest('[role="menu"]')) return false;
+      // Do not guess from a partially matching/localized text node. The
+      // accessible name is the only legacy fallback and must be exact.
+      const label = normalizedText(item.getAttribute("aria-label") || item.getAttribute("title") || "");
+      return label === expected;
+    });
+    return matches.length === 1 ? matches[0] : null;
+  }
+
+  async function chooseMessageMenuAction(action, unavailableMessage) {
+    normalModeLockUntil = 0;
+    messageModeLockUntil = performance.now() + 1100;
+    const row = selectedMessageRow();
+    const message = await revealMessageControls(row);
+    const menuButton = message?.querySelector('[data-testid="icon-down-context"]');
+    if (!(menuButton instanceof HTMLElement) || !triggerMouse(menuButton)) {
+      flash("Message actions are not available");
+      keepMessageFocus();
+      return false;
+    }
+
+    const item = await waitForValue(() => visibleMenuItem(action));
+    if (!item) {
+      triggerMouse(menuButton);
+      flash(unavailableMessage);
+      keepMessageFocus();
+      return false;
+    }
+
+    messageModeLockUntil = 0;
+    triggerMouse(item);
+    return true;
+  }
+
+  function replyComposerOpen() {
+    return [...document.querySelectorAll('#main [data-testid="quoted-message"]')]
+      .some((quoted) => isVisible(quoted) && !quoted.closest('[data-testid="msg-container"]'));
+  }
+
+  function editMessageComposer() {
+    const editor = document.querySelector('[data-testid="edit-message-composer"][contenteditable="true"]');
+    return editor instanceof HTMLElement && isVisible(editor) ? editor : null;
+  }
+
+  async function replyToSelectedMessage() {
+    const row = selectedMessageRow();
+    if (!row) {
+      flash("Select a message first");
+      return;
+    }
+    captureMessageReturn(row);
+    if (!await chooseMessageMenuAction("reply", "This message cannot be replied to")) {
+      clearMessageReturn();
+      return;
+    }
+    if (!await waitForValue(replyComposerOpen)) {
+      clearMessageReturn();
+      flash("WhatsApp did not open the reply composer");
+      return;
+    }
+    focusComposer();
+  }
+
+  async function editSelectedMessage() {
+    const row = selectedMessageRow();
+    if (!row) {
+      flash("Select a message first");
+      return;
+    }
+    captureMessageReturn(row);
+    if (!await chooseMessageMenuAction("edit", "Only recent editable messages can be edited")) {
+      clearMessageReturn();
+      return;
+    }
+    const editor = await waitForValue(editMessageComposer);
+    if (!editor) {
+      clearMessageReturn();
+      flash("WhatsApp did not open the message editor");
+      return;
+    }
+    messageModeLockUntil = 0;
+    editor.focus({ preventScroll: true });
+    setMode("insert", { focus: false });
+  }
+
+  function reactionPicker() {
+    return [...document.querySelectorAll('[role="dialog"]')].find((dialog) => {
+      if (dialog.id === ids.help || !isVisible(dialog)) return false;
+      if (dialog.querySelector('[role="grid"]')) return true;
+      if (dialog.querySelector('[data-emoji], [data-testid*="emoji" i]')) return true;
+      return [...dialog.querySelectorAll('button[aria-label], [role="button"][aria-label]')]
+        .some((button) => /^react(?:\s|$)/i.test(button.getAttribute("aria-label") || ""));
+    }) || null;
+  }
+
+  function reactionSearchEditor(picker = reactionPicker()) {
+    if (!(picker instanceof Element)) return null;
+    const editors = [...picker.querySelectorAll([
+      'input:not([disabled])',
+      'textarea:not([disabled])',
+      '[contenteditable="true"][role="textbox"]',
+      '[contenteditable="true"][data-tab]',
+    ].join(", "))].filter((editor) => editor instanceof HTMLElement && isVisible(editor));
+    const labelled = editors.find((editor) => /search|emoji/i.test([
+      editor.getAttribute("aria-label"),
+      editor.getAttribute("placeholder"),
+      editor.getAttribute("data-testid"),
+    ].filter(Boolean).join(" ")));
+    return labelled || editors[0] || null;
+  }
+
+  function isReactionSearchContext(element) {
+    if (!(element instanceof Element)) return false;
+    const editor = reactionSearchEditor();
+    return editor instanceof Element && (element === editor || editor.contains(element));
+  }
+
+  function reactionChoiceCandidates(scope) {
+    if (!(scope instanceof Element)) return [];
+    const candidates = [...scope.querySelectorAll([
+      "button:not([disabled])",
+      '[role="button"]:not([aria-disabled="true"])',
+      '[role="gridcell"]:not([aria-disabled="true"])',
+      '[role="option"]:not([aria-disabled="true"])',
+      '[role="tab"]:not([aria-disabled="true"])',
+      "[data-emoji]",
+      '[data-testid*="emoji" i]',
+      '[tabindex]:not([tabindex="-1"])',
+    ].join(", "))].filter((choice) => (
+      choice instanceof HTMLElement && isVisible(choice) && !isEditable(choice)
+    ));
+
+    // WhatsApp sometimes nests a role=button/gridcell around the actual
+    // button. Keep the deepest actionable node so one emoji is one stop.
+    return candidates.filter((choice) => !candidates.some((other) => (
+      other !== choice && choice.contains(other)
+    )));
+  }
+
+  function reactionChoices(picker = reactionPicker()) {
+    if (!(picker instanceof Element)) return [];
+    const groups = [...picker.querySelectorAll([
+      '[role="grid"]',
+      '[role="listbox"]',
+      '[role="toolbar"]',
+      '[role="tablist"]',
+    ].join(", "))].filter(isVisible);
+    const groupedChoices = groups.flatMap(reactionChoiceCandidates);
+    return groupedChoices.length
+      ? [...new Set(groupedChoices)]
+      : reactionChoiceCandidates(picker);
+  }
+
+  function clearReactionFocus() {
+    document.querySelectorAll(`.${selectedReactionClass}`).forEach((choice) => {
+      choice.classList.remove(selectedReactionClass);
+    });
+    activeReactionChoice = null;
+  }
+
+  function cancelReactionSearchFocus() {
+    reactionSearchFocusSerial += 1;
+    reactionSearchFocusUntil = 0;
+  }
+
+  function focusReactionChoice(choice) {
+    if (!(choice instanceof HTMLElement) || !choice.isConnected) return false;
+    cancelReactionSearchFocus();
+    clearReactionFocus();
+    activeReactionChoice = choice;
+    messageOverlayKind = "reaction";
+    choice.classList.add(selectedReactionClass);
+    if (!choice.matches("button, input, select, textarea, [tabindex]")) {
+      choice.setAttribute("tabindex", "-1");
+    }
+    choice.scrollIntoView({ block: "nearest", inline: "nearest" });
+    choice.focus({ preventScroll: true });
+    setMode("message", { focus: false });
+    return true;
+  }
+
+  function focusReactionSearch(picker = reactionPicker()) {
+    const editor = reactionSearchEditor(picker);
+    if (!(editor instanceof HTMLElement)) {
+      flash("The full emoji search is not available");
+      return false;
+    }
+    clearReactionFocus();
+    normalModeLockUntil = 0;
+    messageModeLockUntil = 0;
+    messageOverlayKind = "reaction";
+    setMode("insert", { focus: false });
+    const focusSerial = ++reactionSearchFocusSerial;
+    reactionSearchFocusUntil = performance.now() + 900;
+    const restoreSearchFocus = () => {
+      if (
+        focusSerial !== reactionSearchFocusSerial ||
+        messageOverlayKind !== "reaction" ||
+        performance.now() > reactionSearchFocusUntil
+      ) return;
+      const currentPicker = reactionPicker();
+      const currentEditor = reactionSearchEditor(currentPicker);
+      if (!(currentEditor instanceof HTMLElement)) return;
+      normalModeLockUntil = 0;
+      messageModeLockUntil = 0;
+      if (document.activeElement !== currentEditor) {
+        currentEditor.focus({ preventScroll: true });
+      }
+      setMode("insert", { focus: false });
+    };
+    restoreSearchFocus();
+    for (const delay of [60, 160, 320, 640]) {
+      setTimeout(restoreSearchFocus, delay);
+    }
+    return true;
+  }
+
+  function focusReactionGrid(picker = reactionPicker()) {
+    const choices = reactionChoices(picker);
+    const choice = choices.includes(activeReactionChoice) ? activeReactionChoice : choices[0];
+    if (focusReactionChoice(choice)) return true;
+    flash("No emoji results are available");
+    setMode("message", { focus: false });
+    return false;
+  }
+
+  function reactionChoiceCenter(choice) {
+    const rect = choice.getBoundingClientRect();
+    return {
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2,
+    };
+  }
+
+  function moveReactionFocus(direction) {
+    const picker = reactionPicker();
+    const choices = reactionChoices(picker);
+    if (!choices.length) {
+      flash("No reaction choices are available");
+      return;
+    }
+
+    const focused = document.activeElement;
+    const current = choices.includes(activeReactionChoice)
+      ? activeReactionChoice
+      : choices.find((choice) => choice === focused || choice.contains(focused)) || choices[0];
+    const origin = reactionChoiceCenter(current);
+    const horizontal = direction === "left" || direction === "right";
+    const sign = direction === "left" || direction === "up" ? -1 : 1;
+
+    const ranked = choices
+      .filter((choice) => choice !== current)
+      .map((choice) => {
+        const center = reactionChoiceCenter(choice);
+        const primaryDelta = horizontal ? center.x - origin.x : center.y - origin.y;
+        const crossDelta = horizontal ? center.y - origin.y : center.x - origin.x;
+        return {
+          choice,
+          primary: primaryDelta * sign,
+          score: Math.abs(primaryDelta) + Math.abs(crossDelta) * 2,
+        };
+      })
+      .filter(({ primary }) => primary > 1)
+      .sort((left, right) => left.score - right.score);
+
+    let target = ranked[0]?.choice;
+    if (!target && !horizontal) {
+      // WhatsApp's quick reactions form one horizontal row. Let j/k remain
+      // useful there while retaining true vertical movement in the full grid.
+      const index = choices.indexOf(current);
+      target = choices[index + sign];
+    }
+    if (target) focusReactionChoice(target);
+  }
+
+  async function chooseFocusedReaction() {
+    const picker = reactionPicker();
+    const choices = reactionChoices(picker);
+    const focused = document.activeElement;
+    const choice = choices.includes(activeReactionChoice)
+      ? activeReactionChoice
+      : choices.find((candidate) => candidate === focused || candidate.contains(focused)) || choices[0];
+    if (!(choice instanceof HTMLElement) || !triggerMouse(choice)) {
+      flash("No reaction choice is selected");
+      return;
+    }
+
+    const expectsFullPicker = choices.length <= 12 && choice === choices.at(-1);
+    const transitionStarted = performance.now();
+    const outcome = await waitForValue(() => {
+      const nextPicker = reactionPicker();
+      if (!nextPicker) {
+        if (expectsFullPicker && performance.now() - transitionStarted < 500) return null;
+        return { closed: true };
+      }
+      const search = reactionSearchEditor(nextPicker);
+      return search ? { picker: nextPicker, search } : null;
+    }, 650);
+    if (outcome?.search) {
+      focusReactionSearch(outcome.picker);
+      flash("Type to search; Esc enters the emoji grid; / returns to search");
+      return;
+    }
+
+    const nextPicker = reactionPicker();
+    if (outcome?.closed || !nextPicker) {
+      clearReactionFocus();
+      messageOverlayKind = "";
+      keepMessageFocus();
+      return;
+    }
+
+    const nextChoices = reactionChoices(nextPicker);
+    const nextChoice = nextChoices.includes(choice) ? choice : nextChoices[0];
+    if (nextChoice) focusReactionChoice(nextChoice);
+  }
+
+  async function closeReactionPicker() {
+    const closeSerial = ++messageOverlayCloseSerial;
+    const picker = reactionPicker();
+    messageOverlayKind = "";
+    cancelReactionSearchFocus();
+    clearReactionFocus();
+    if (!picker) {
+      keepMessageFocus();
+      return;
+    }
+    const row = selectedMessageRow();
+    const message = await revealMessageControls(row);
+    const button = message?.querySelector('[data-testid="reaction-entry-point"]');
+    if (button instanceof HTMLElement) triggerMouse(button);
+    await wait(80);
+    if (closeSerial === messageOverlayCloseSerial) keepMessageFocus();
+  }
+
+  async function reactToSelectedMessage() {
+    const row = selectedMessageRow();
+    const message = await revealMessageControls(row);
+    if (!message) {
+      flash("Select a message first");
+      return;
+    }
+
+    const direct = message.querySelector('[data-testid="reaction-entry-point"]');
+    if (direct instanceof HTMLElement) triggerMouse(direct);
+    else if (!await chooseMessageMenuAction("react", "This message cannot be reacted to")) return;
+
+    const picker = await waitForValue(reactionPicker);
+    if (!picker) {
+      flash("WhatsApp did not open the reaction picker");
+      return;
+    }
+    messageOverlayKind = "reaction";
+    const firstChoice = reactionChoices(picker)[0];
+    if (!focusReactionChoice(firstChoice)) setMode("message", { focus: false });
+  }
+
+  function messageMediaTarget(message) {
+    const labelled = [...message.querySelectorAll('button[aria-label], [role="button"][aria-label]')]
+      .find((element) => {
+        const label = element.getAttribute("aria-label") || "";
+        return isVisible(element) && /(open|view|play).*(image|photo|video|gif|audio|voice|document|media)|^(play|open|view)\b/i.test(label);
+      });
+    if (labelled instanceof HTMLElement) return labelled;
+
+    const visual = [...message.querySelectorAll("video, img")].find((element) => {
+      if (element.closest('[data-testid="selectable-text"], [data-testid="quoted-message"]')) return false;
+      const rect = element.getBoundingClientRect();
+      return isVisible(element) && rect.width >= 48 && rect.height >= 48;
+    });
+    if (visual instanceof HTMLElement) return visual;
+
+    const tested = [...message.querySelectorAll("[data-testid]")].find((element) => {
+      const testid = element.getAttribute("data-testid") || "";
+      return isVisible(element) && /(image|photo|video|gif|audio|document|sticker|media|view-once)/i.test(testid);
+    });
+    return tested instanceof HTMLElement ? tested : null;
+  }
+
+  function messageReadMoreControl(message) {
+    if (!(message instanceof Element)) return null;
+    const candidates = [...message.querySelectorAll([
+      '[data-testid*="read-more" i]',
+      '[data-testid*="expand" i]',
+      "button",
+      '[role="button"]',
+    ].join(", "))];
+    return candidates.find((control) => {
+      if (!isVisible(control)) return false;
+      const testid = control.getAttribute("data-testid") || "";
+      if (/(?:read[-_]?more|expand)/i.test(testid)) return true;
+      const label = normalizedText(control.getAttribute("aria-label") || control.getAttribute("title") || control.textContent);
+      return /^(?:read|show) more$|^expand(?:\s|$)/.test(label);
+    }) || null;
+  }
+
+  function expandSelectedMessage() {
+    const control = messageReadMoreControl(messageContainer(selectedMessageRow()));
+    return control instanceof HTMLElement && triggerMouse(control);
+  }
+
+  async function openSelectedMessageMedia(options = {}) {
+    const selectMessagePaneWhenUnavailable = options.selectMessagePaneWhenUnavailable === true;
+    const row = selectedMessageRow();
+    captureMediaReturn(row);
+    const message = await revealMessageControls(row);
+    const target = message && messageMediaTarget(message);
+    if (!target) {
+      finishMediaClose();
+      if (selectMessagePaneWhenUnavailable) return selectMessagePane();
+      flash("The selected message has no openable media");
+      return false;
+    }
+    if (!triggerMouse(target)) {
+      finishMediaClose();
+      if (selectMessagePaneWhenUnavailable) return selectMessagePane();
+      flash("The selected message has no openable media");
+      return false;
+    }
+    messageOverlayKind = "media";
+    setMode("message", { focus: false });
+    return true;
+  }
+
+  function captureMediaReturn(row = selectedMessageRow()) {
+    clearMediaReturn();
+    if (!(row instanceof HTMLElement)) return;
+    const scroller = messageScroller(row);
+    mediaReturnRow = row;
+    mediaReturnKey = messageKey(row);
+    mediaReturnScroller = scroller;
+    mediaReturnScrollTop = scroller?.scrollTop ?? null;
+    mediaReturnScrollLeft = scroller?.scrollLeft ?? null;
+  }
+
+  function mediaReturnMessageRow() {
+    if (mediaReturnRow?.isConnected && messageContainer(mediaReturnRow)) return mediaReturnRow;
+    if (mediaReturnKey) {
+      return messageRows().find((row) => messageKey(row) === mediaReturnKey) || null;
+    }
+    return null;
+  }
+
+  function finishMediaClose() {
+    messageOverlayKind = "";
+    const restored = mediaReturnMessageRow() || selectedMessageRow();
+    const returnKey = mediaReturnKey || messageKey(restored);
+    const scroller = mediaReturnScroller?.isConnected
+      ? mediaReturnScroller
+      : messageScroller(restored);
+    const scrollTop = mediaReturnScrollTop;
+    const scrollLeft = mediaReturnScrollLeft;
+    const restoreSerial = ++mediaRestoreSerial;
+
+    mediaReturnRow = null;
+    mediaReturnKey = "";
+    mediaReturnScroller = null;
+    mediaReturnScrollTop = null;
+    mediaReturnScrollLeft = null;
+
+    if (restored && !restored.classList.contains(selectedMessageClass)) {
+      selectMessage(restored, { scroll: false });
+    } else {
+      keepMessageFocus();
+    }
+
+    if (!(scroller instanceof HTMLElement) || scrollTop === null) return;
+    const restoreScroll = () => {
+      if (
+        mediaRestoreSerial !== restoreSerial ||
+        mode !== "message" ||
+        mediaViewer() ||
+        (returnKey && activeMessageKey !== returnKey)
+      ) return;
+      scroller.scrollTop = scrollTop;
+      if (scrollLeft !== null) scroller.scrollLeft = scrollLeft;
+    };
+    for (const delay of [0, 80, 200]) setTimeout(restoreScroll, delay);
+  }
+
+  function mediaViewer() {
+    const explicit = [...document.querySelectorAll([
+      '[data-testid="media-viewer-modal"]',
+      '[data-testid="media-viewer"]',
+    ].join(", "))].find(isVisible);
+    if (explicit instanceof HTMLElement) return explicit;
+
+    const media = [...document.querySelectorAll([
+      '[data-testid="media-zoomable"]',
+      '[data-testid="media-image"]',
+    ].join(", "))].find(isVisible);
+    const fallback = media?.closest('[data-testid*="media-viewer" i], [role="dialog"]');
+    return fallback instanceof HTMLElement && isVisible(fallback) ? fallback : null;
+  }
+
+  function mediaViewerCloseControl(viewer) {
+    if (!(viewer instanceof Element)) return null;
+    const labelled = [...viewer.querySelectorAll('button[aria-label], [role="button"][aria-label]')]
+      .find((button) => (
+        isVisible(button) && /^(close|cancel)(?:\s|$)/i.test(button.getAttribute("aria-label") || "")
+      ));
+    if (labelled instanceof HTMLElement) return labelled;
+
+    const icon = [...viewer.querySelectorAll([
+      '[data-testid*="close" i]',
+      '[data-icon="x"]',
+      '[data-icon*="close" i]',
+    ].join(", "))].find(isVisible);
+    const control = icon?.closest("button, [role=\"button\"]") || icon;
+    return control instanceof HTMLElement && isVisible(control) ? control : null;
+  }
+
+  function mediaViewerNavigationControl(viewer, direction) {
+    if (!(viewer instanceof Element)) return null;
+    const expression = direction < 0
+      ? /(?:^|[\s_-])(?:previous|prev)(?:[\s_-]|$)|(?:arrow|chevron)[\s_-]*left|left[\s_-]*(?:arrow|chevron)/i
+      : /(?:^|[\s_-])next(?:[\s_-]|$)|(?:arrow|chevron)[\s_-]*right|right[\s_-]*(?:arrow|chevron)/i;
+    return [...viewer.querySelectorAll([
+      "button:not([disabled])",
+      '[role="button"]:not([aria-disabled="true"])',
+    ].join(", "))].find((control) => {
+      if (!(control instanceof HTMLElement) || !isVisible(control)) return false;
+      const descendants = [...control.querySelectorAll("[data-icon], [data-testid]")];
+      const signature = [
+        control.getAttribute("aria-label"),
+        control.getAttribute("title"),
+        control.getAttribute("data-icon"),
+        control.getAttribute("data-testid"),
+        ...descendants.flatMap((element) => [
+          element.getAttribute("data-icon"),
+          element.getAttribute("data-testid"),
+        ]),
+      ].filter(Boolean).join(" ");
+      return expression.test(signature);
+    }) || null;
+  }
+
+  function dispatchMediaArrow(viewer, direction) {
+    if (!(viewer instanceof Element)) return false;
+    const key = direction < 0 ? "ArrowLeft" : "ArrowRight";
+    const init = {
+      key,
+      code: key,
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+    };
+    viewer.dispatchEvent(new KeyboardEvent("keydown", init));
+    viewer.dispatchEvent(new KeyboardEvent("keyup", init));
+    return true;
+  }
+
+  async function navigateMediaOverlay(direction) {
+    normalModeLockUntil = 0;
+    messageModeLockUntil = performance.now() + 500;
+    messageOverlayKind = "media";
+    setMode("message", { focus: false });
+
+    const viewer = mediaViewer() || await waitForValue(mediaViewer, 500);
+    if (!viewer) {
+      finishMediaClose();
+      flash("WhatsApp's media viewer is no longer open");
+      return false;
+    }
+
+    const control = mediaViewerNavigationControl(viewer, direction);
+    if (control instanceof HTMLElement && triggerMouse(control)) return true;
+    return dispatchMediaArrow(viewer, direction);
+  }
+
+  async function closeMediaOverlay() {
+    const viewer = mediaViewer();
+    if (!viewer) {
+      finishMediaClose();
+      return true;
+    }
+
+    const close = mediaViewerCloseControl(viewer);
+    if (!close || !triggerMouse(close)) {
+      flash("WhatsApp's media viewer could not be closed");
+      keepMessageFocus();
+      return false;
+    }
+
+    const closed = await waitForValue(() => mediaViewer() ? null : true, 700);
+    if (!closed) {
+      messageOverlayKind = "media";
+      flash("WhatsApp's media viewer is still open");
+      keepMessageFocus();
+      return false;
+    }
+
+    finishMediaClose();
+    return true;
+  }
+
+  function composer() {
+    const selectors = [
+      '#main footer [contenteditable="true"][role="textbox"]',
+      '#main [contenteditable="true"][role="textbox"]',
+      '#main [contenteditable="true"][data-tab]',
+      "#main textarea",
+    ];
+    for (const selector of selectors) {
+      const match = [...document.querySelectorAll(selector)].find(isVisible);
+      if (match instanceof HTMLElement) return match;
+    }
+    return null;
+  }
+
+  function focusComposer(options = {}) {
+    const editor = composer();
+    if (!editor) {
+      if (pendingChatActivation && !options.retrying) {
+        pendingChatActivation.then(() => {
+          if (!focusComposer({ ...options, retrying: true, announce: false }) && options.announce !== false) {
+            flash("Open a chat before entering Insert mode");
+          }
+        });
+        return null;
+      }
+      if (options.announce !== false) flash("Open a chat before entering Insert mode");
+      return null;
+    }
+    normalModeLockUntil = 0;
+    messageModeLockUntil = 0;
+    editor.focus({ preventScroll: true });
+    setMode("insert", { focus: false });
+    return editor;
+  }
+
+  function composeFromMessageMode() {
+    const row = selectedMessageRow();
+    if (!row) {
+      focusComposer();
+      return;
+    }
+
+    captureMessageReturn(row);
+    if (!focusComposer()) clearMessageReturn();
+  }
+
+  async function composeAtLatestMessage() {
+    const rows = messageRows();
+    const current = selectedMessageRow() || rows.at(-1);
+    let scroller = messageScroller(current);
+
+    // WhatsApp virtualizes long chats. Wait for the scroll boundary instead of
+    // assuming a fixed render delay, then perform one bounded second pass.
+    if (scroller) {
+      scroller.scrollTop = scroller.scrollHeight;
+      await waitForPredicate(() => (
+        scroller.scrollTop >= scroller.scrollHeight - scroller.clientHeight - 1
+      ) ? true : null, { root: scroller, timeout: 700, poll: true });
+      const renderedLatest = messageRows().at(-1);
+      scroller = messageScroller(renderedLatest) || scroller;
+      scroller.scrollTop = scroller.scrollHeight;
+      await waitForPredicate(() => (
+        scroller.scrollTop >= scroller.scrollHeight - scroller.clientHeight - 1
+      ) ? true : null, { root: scroller, timeout: 700, poll: true });
+    }
+
+    const latest = messageRows().at(-1) || current;
+    if (!latest || !selectMessage(latest, { scroll: false, mode: false })) {
+      clearMessageReturn();
+      focusComposer();
+      return;
+    }
+
+    captureMessageReturn(latest);
+    if (!focusComposer()) clearMessageReturn();
+  }
+
+  function popupSearchEditor() {
+    const selectors = [
+      '[role="dialog"] [data-testid="chat-list-search-container"] input[role="textbox"]',
+      '[role="dialog"] [data-testid="chat-list-search-container"] input[aria-label]',
+      '[role="dialog"] [data-testid="chat-list-search-container"] input[placeholder]',
+      '[role="dialog"] [data-testid="chat-list-search-container"] [contenteditable="true"][role="textbox"]',
+    ];
+    for (const selector of selectors) {
+      const match = [...document.querySelectorAll(selector)].find(isVisible);
+      if (match instanceof HTMLElement) return match;
+    }
+    return null;
+  }
+
+  function popupSearchDialog() {
+    const editor = popupSearchEditor();
+    if (!isPopupSearchEditor(editor)) return null;
+    const dialog = editor.closest('[role="dialog"]');
+    return dialog instanceof HTMLElement && isVisible(dialog) ? dialog : null;
+  }
+
+  function isPopupSearchContext(element) {
+    const dialog = popupSearchDialog();
+    return element instanceof Element && Boolean(dialog?.contains(element));
+  }
+
+  function focusSearch() {
+    normalModeLockUntil = 0;
+
+    // Run WhatsApp's own extended-search shortcut after the `/` keydown has
+    // finished. This preserves its popup UI without inserting `/` into it.
+    setTimeout(() => {
+      dispatchWhatsAppShortcut({ key: "k", code: "KeyK", altKey: true });
+
+      const focusWhenReady = (attempt = 0) => {
+        if (isPopupSearchEditor(document.activeElement)) {
+          setMode("insert", { focus: false });
+          return;
+        }
+
+        const editor = popupSearchEditor();
+        if (editor) {
+          editor.focus({ preventScroll: true });
+          setMode("insert", { focus: false });
+          return;
+        }
+
+        if (attempt < 30) {
+          setTimeout(() => focusWhenReady(attempt + 1), 50);
+          return;
+        }
+
+        flash("WhatsApp search is not available");
+        setMode("normal");
+      };
+
+      focusWhenReady();
+    }, 0);
+  }
+
+  function isPopupSearchEditor(element) {
+    return (
+      element instanceof Element &&
+      isEditable(element) &&
+      element.closest('[role="dialog"]') &&
+      element.closest('[data-testid="chat-list-search-container"]')
+    );
+  }
+
+  function isSidebarSearchEditor(element) {
+    return (
+      element instanceof Element &&
+      isEditable(element) &&
+      element.closest("#side") &&
+      element.closest('[data-testid="chat-list-search-container"]')
+    );
+  }
+
+  function clearSearchEditor(editor) {
+    if (editor instanceof HTMLInputElement || editor instanceof HTMLTextAreaElement) {
+      const prototype = editor instanceof HTMLInputElement
+        ? HTMLInputElement.prototype
+        : HTMLTextAreaElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(prototype, "value")?.set;
+      if (setter && editor.value) {
+        setter.call(editor, "");
+        editor.dispatchEvent(new InputEvent("input", {
+          bubbles: true,
+          cancelable: false,
+          composed: true,
+          data: null,
+          inputType: "deleteContentBackward",
+        }));
+      }
+      return;
+    }
+
+    if (editor instanceof HTMLElement && editor.isContentEditable && editor.textContent) {
+      editor.textContent = "";
+      editor.dispatchEvent(new InputEvent("input", {
+        bubbles: true,
+        cancelable: false,
+        composed: true,
+        data: null,
+        inputType: "deleteContentBackward",
+      }));
+    }
+  }
+
+  function messageReturnRow(row = messageModeReturnRow, key = messageModeReturnKey) {
+    if (row?.isConnected && messageContainer(row)) {
+      return row;
+    }
+    if (key) {
+      return messageRows().find((candidate) => messageKey(candidate) === key) || null;
+    }
+    return null;
+  }
+
+  async function cancelMessageComposerAction() {
+    const editModal = [...document.querySelectorAll('[data-testid="edit-message-modal"]')].find(isVisible);
+    if (editModal) {
+      const close = [...editModal.querySelectorAll('button[aria-label], [role="button"][aria-label]')]
+        .find((button) => /^(close|cancel)(?:\s|$)/i.test(button.getAttribute("aria-label") || ""));
+      if (close instanceof HTMLElement) triggerMouse(close);
+    } else if (replyComposerOpen()) {
+      const cancel = [...document.querySelectorAll('#main button[aria-label], #main [role="button"][aria-label]')]
+        .find((button) => isVisible(button) && /cancel/i.test(button.getAttribute("aria-label") || ""));
+      if (cancel instanceof HTMLElement) triggerMouse(cancel);
+    }
+    await wait(100);
+  }
+
+  async function restoreMessageMode() {
+    const editor = document.activeElement;
+    const returnRow = messageModeReturnRow;
+    const returnKey = messageModeReturnKey;
+    const restoreSerial = ++messageReturnRestoreSerial;
+    pendingMessageReturnRestore = restoreSerial;
+    await cancelMessageComposerAction();
+    if (restoreSerial !== messageReturnRestoreSerial) {
+      if (pendingMessageReturnRestore === restoreSerial) pendingMessageReturnRestore = 0;
+      return;
+    }
+    if (isEditable(editor) && editor.isConnected && document.activeElement === editor) editor.blur();
+    const row = await waitForPredicate(() => (
+      restoreSerial === messageReturnRestoreSerial
+        ? messageReturnRow(returnRow, returnKey)
+        : null
+    ), { root: document.body, timeout: 700, poll: true });
+    if (restoreSerial !== messageReturnRestoreSerial) {
+      if (pendingMessageReturnRestore === restoreSerial) pendingMessageReturnRestore = 0;
+      return;
+    }
+    if (pendingMessageReturnRestore === restoreSerial) pendingMessageReturnRestore = 0;
+    clearMessageReturn();
+    if (row && selectMessage(row)) {
+      keepMessageFocus();
+      return;
+    }
+    enterMessageMode();
+    if (mode === "message") keepMessageFocus();
+  }
+
+  async function leaveInsertOrClosePane() {
+    if (messageModeReturnRow || messageModeReturnKey) {
+      await restoreMessageMode();
+      return;
+    }
+
+    if (isEditable(document.activeElement)) {
+      const editor = document.activeElement;
+      const popupSearch = isPopupSearchEditor(editor);
+      if (isSidebarSearchEditor(editor)) clearSearchEditor(editor);
+      editor.blur();
+      if (popupSearch) dispatchWhatsAppShortcut({ key: "Escape", code: "Escape" });
+      setMode("normal");
+      return;
+    }
+    clearChatSelection();
+    clearMessageSelection();
+    clearMessageReturn();
+    dispatchWhatsAppShortcut({ key: "Escape", code: "Escape" });
+    setMode("normal");
+  }
+
+  async function leaveMessageModeOrCloseOverlay() {
+    if (mediaViewer() || messageOverlayKind === "media") {
+      await closeMediaOverlay();
+      return;
+    }
+    if (reactionPicker() || messageOverlayKind === "reaction") {
+      await closeReactionPicker();
+      return;
+    }
+    messageOverlayCloseSerial += 1;
+    clearMessageSelection();
+    clearMessageReturn();
+    setMode("normal");
+  }
+
+  function execute(action) {
+    switch (action) {
+      case "next-chat":
+        setActivePane("chat", { announce: false });
+        navigateChat(1);
+        break;
+      case "previous-chat":
+        setActivePane("chat", { announce: false });
+        navigateChat(-1);
+        break;
+      case "first-chat":
+        setActivePane("chat", { announce: false });
+        selectBoundaryChat("first");
+        break;
+      case "last-chat":
+        setActivePane("chat", { announce: false });
+        selectBoundaryChat("last");
+        break;
+      case "select-chat-pane":
+        if (setActivePane("chat") && mode === "message") keepNormalFocus();
+        break;
+      case "select-message-pane":
+        selectMessagePane();
+        break;
+      case "open-message-media-or-select-message-pane":
+        openSelectedMessageMedia({ selectMessagePaneWhenUnavailable: true });
+        break;
+      case "escape":
+        if (mode === "message") leaveMessageModeOrCloseOverlay();
+        else leaveInsertOrClosePane();
+        break;
+      case "compose":
+        focusComposer();
+        break;
+      case "next-message":
+        setActivePane("message", { announce: false });
+        navigateMessage(1);
+        break;
+      case "previous-message":
+        setActivePane("message", { announce: false });
+        navigateMessage(-1);
+        break;
+      case "reply-message":
+        replyToSelectedMessage();
+        break;
+      case "edit-message":
+        editSelectedMessage();
+        break;
+      case "compose-from-message":
+        composeFromMessageMode();
+        break;
+      case "compose-at-latest-message":
+        composeAtLatestMessage();
+        break;
+      case "react-message":
+        reactToSelectedMessage();
+        break;
+      case "reaction-left":
+        moveReactionFocus("left");
+        break;
+      case "reaction-down":
+        moveReactionFocus("down");
+        break;
+      case "reaction-up":
+        moveReactionFocus("up");
+        break;
+      case "reaction-right":
+        moveReactionFocus("right");
+        break;
+      case "choose-reaction":
+        chooseFocusedReaction();
+        break;
+      case "reaction-search":
+        focusReactionSearch();
+        break;
+      case "media-previous":
+        navigateMediaOverlay(-1);
+        break;
+      case "media-next":
+        navigateMediaOverlay(1);
+        break;
+      case "open-message-media":
+        openSelectedMessageMedia();
+        break;
+      case "expand-message":
+        expandSelectedMessage();
+        break;
+      case "search":
+        focusSearch();
+        break;
+      case "help":
+        setHelpOpen(!helpOpen);
+        break;
+      default:
+        break;
+    }
+  }
+
+  function onKeyDown(event) {
+    if (!event.isTrusted) return;
+
+    if (helpOpen) {
+      const closeHelpShortcut =
+        event.key === "Escape" ||
+        (event.ctrlKey && !event.altKey && !event.metaKey && event.key === "[");
+      if (closeHelpShortcut) {
+        consume(event);
+        setHelpOpen(false);
+      }
+      return;
+    }
+
+    const pasteShortcut =
+      mode === "normal" &&
+      event.ctrlKey &&
+      !event.altKey &&
+      !event.metaKey &&
+      event.key.toLowerCase() === "v";
+    if (pasteShortcut && focusComposer({ announce: false })) {
+      // Leave the trusted event untouched. Chromium performs the paste after
+      // keydown, using the composer we focused synchronously above.
+      return;
+    }
+
+    const targetIsEditable = isEditable(event.target);
+    const targetInPopupSearch = isPopupSearchContext(event.target);
+    const targetInReactionSearch = isReactionSearchContext(event.target);
+    const targetInReactionPicker = reactionPicker()?.contains(event.target) === true;
+    const lockedMode = targetInPopupSearch || targetInReactionSearch
+      ? null
+      : lockedCommandMode();
+    if (targetInReactionSearch) {
+      normalModeLockUntil = 0;
+      messageModeLockUntil = 0;
+      messageOverlayKind = "reaction";
+      if (mode !== "insert") setMode("insert", { focus: false });
+    } else if (targetInPopupSearch && mode !== "insert") {
+      setMode("insert", { focus: false });
+    } else if (targetIsEditable && lockedMode) {
+      // WhatsApp can synchronously reclaim the composer while j/k is moving
+      // through chats or messages. A second queued keydown must stay in the
+      // command mode that initiated navigation instead of becoming text.
+      setMode(lockedMode, { focus: false });
+      setTimeout(focusSentinel, 0);
+    } else if (targetIsEditable && mode !== "insert") {
+      setMode("insert", { focus: false });
+    }
+    if (!targetIsEditable && targetInReactionPicker && mode === "insert") {
+      setMode("message", { focus: false });
+    } else if (
+      !targetIsEditable &&
+      !targetInPopupSearch &&
+      document.activeElement !== sentinel &&
+      mode === "insert"
+    ) {
+      setMode("normal", { focus: false });
+    }
+
+    const decision = keymap.resolve(event, {
+      mode,
+      pendingG,
+      activePane,
+      reactionOpen: mode === "message" && Boolean(reactionPicker()),
+      mediaOpen: mode === "message" && (messageOverlayKind === "media" || Boolean(mediaViewer())),
+    });
+    pendingG = decision.pendingG;
+    clearTimeout(pendingGTimer);
+    if (pendingG) {
+      pendingGTimer = setTimeout(() => {
+        pendingG = false;
+      }, 700);
+    }
+
+    if (!decision.action) return;
+
+    if (suppressDuplicatePaneNavigation(event, decision.action)) {
+      consume(event);
+      return;
+    }
+
+    if (
+      decision.action === "escape" &&
+      mode === "insert" &&
+      targetInReactionSearch
+    ) {
+      // In the full picker, Escape changes from search/typing to Vim grid
+      // navigation. A subsequent Escape in Normal mode closes the picker.
+      consume(event);
+      focusReactionGrid();
+      return;
+    }
+
+    if (
+      decision.action === "escape" &&
+      mode === "insert" &&
+      isPopupSearchContext(event.target)
+    ) {
+      // Close the popup while it still owns focus, then stop the physical key
+      // before Vimium can consume it or WhatsApp can also collapse the sidebar.
+      consume(event);
+      dispatchWhatsAppShortcut({ key: "Escape", code: "Escape" });
+      setMode("normal", { focus: false });
+      setTimeout(focusSentinel, 100);
+      return;
+    }
+
+    consume(event);
+    if (decision.action !== "await-g") execute(decision.action);
+  }
+
+  function onPointerUp(event) {
+    // A user pointer action during the bounded cancellation wait has chosen a
+    // new context. Do not let the delayed keyed restore steal focus back.
+    if (pendingMessageReturnRestore) {
+      clearMessageReturn();
+      pendingMessageReturnRestore = 0;
+    }
+    const target = event.composedPath?.()[0] || event.target;
+    const row = chatRow(target);
+    if (row) {
+      activeChatRow = row;
+      selectChatRow(row);
+      setActivePane("chat", { announce: false });
+      clearMessageSelection();
+      clearMessageReturn();
+      keepNormalFocus();
+      return;
+    }
+    if (isReactionSearchContext(target)) {
+      normalModeLockUntil = 0;
+      messageModeLockUntil = 0;
+      messageOverlayKind = "reaction";
+      setMode("insert", { focus: false });
+      return;
+    }
+    if (isEditable(target)) {
+      normalModeLockUntil = 0;
+      messageModeLockUntil = 0;
+      if (mode === "message") {
+        captureMessageReturn(selectedMessageRow());
+      }
+      setMode("insert", { focus: false });
+      return;
+    }
+    if (target instanceof Element && target.closest(`#${ids.helpPanel}`)) return;
+    if (mode === "message" && target instanceof Element) {
+      const viewer = mediaViewer();
+      if (viewer?.contains(target)) {
+        if (!mediaReturnRow && !mediaReturnKey) captureMediaReturn();
+        messageOverlayKind = "media";
+        setMode("message", { focus: false });
+        setTimeout(() => {
+          if (!mediaViewer() && messageOverlayKind === "media") {
+            finishMediaClose();
+          }
+        }, 100);
+        return;
+      }
+      const row = messageRow(target);
+      if (row) {
+        selectMessage(row, { mode: false, scroll: false });
+        setMode("message", { focus: false });
+        return;
+      }
+      if (target.closest('[role="dialog"], [role="menu"], [role="grid"]')) {
+        setMode("message", { focus: false });
+        setTimeout(() => {
+          if (!reactionPicker() && messageOverlayKind === "reaction") {
+            clearReactionFocus();
+            messageOverlayKind = "";
+            keepMessageFocus();
+          }
+        }, 100);
+        return;
+      }
+    }
+    if (mode === "message") {
+      clearMessageSelection();
+      clearMessageReturn();
+    }
+    setMode("normal");
+  }
+
+  function onKeyUp(event) {
+    heldPaneNavigationKeys.delete(event.code || event.key);
+  }
+
+  function initialize() {
+    if (!mountUi()) return;
+    setActivePane("chat", { announce: false }) || setActivePane("message", { announce: false });
+    setMode(isEditable(document.activeElement) ? "insert" : "normal");
+  }
+
+  globalThis.addEventListener("keydown", onKeyDown, true);
+  globalThis.addEventListener("keyup", onKeyUp, true);
+  globalThis.addEventListener("blur", () => heldPaneNavigationKeys.clear());
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible") heldPaneNavigationKeys.clear();
+  });
+  document.addEventListener("pointerup", onPointerUp, true);
+  document.addEventListener("focusin", (event) => {
+    if (event.target === sentinel) {
+      setMode(mode === "message" ? "message" : "normal", { focus: false });
+    } else if (isReactionSearchContext(event.target)) {
+      normalModeLockUntil = 0;
+      messageModeLockUntil = 0;
+      messageOverlayKind = "reaction";
+      setMode("insert", { focus: false });
+    } else if (isPopupSearchContext(event.target)) {
+      normalModeLockUntil = 0;
+      messageModeLockUntil = 0;
+      setMode("insert", { focus: false });
+    } else if (reactionPicker()?.contains(event.target)) {
+      setMode("message", { focus: false });
+    } else if (isEditable(event.target)) {
+      if (performance.now() < messageModeLockUntil) {
+        setMode("message", { focus: false });
+        setTimeout(focusSentinel, 0);
+      } else if (performance.now() < normalModeLockUntil) {
+        setMode("normal", { focus: false });
+        setTimeout(focusSentinel, 0);
+      } else {
+        setMode("insert", { focus: false });
+      }
+    }
+  }, true);
+  document.addEventListener("focusout", () => {
+    setTimeout(() => {
+      const preservingReactionSearch =
+        messageOverlayKind === "reaction" &&
+        Boolean(reactionPicker()) &&
+        performance.now() <= reactionSearchFocusUntil;
+      if (
+        mode === "insert" &&
+        !preservingReactionSearch &&
+        !isEditable(document.activeElement) &&
+        !isPopupSearchContext(document.activeElement)
+      ) {
+        setMode("normal");
+      }
+    }, 0);
+  }, true);
+  globalThis.addEventListener("focus", () => {
+    if (mode !== "insert") setTimeout(focusSentinel, 0);
+  });
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initialize, { once: true });
+  } else {
+    initialize();
+  }
+})();

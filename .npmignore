@@ -1,0 +1,12 @@
+tests/
+scripts/
+store-assets/
+dist/
+.git/
+.gitignore
+ARCHITECTURE.md
+ATTRIBUTION.md
+DEVELOPMENT.md
+HANDOFF.md
+PRIVACY.md
+RELEASE.md

@@ -1,0 +1,23 @@
+{
+  "name": "whatsvim",
+  "version": "0.4.0",
+  "private": true,
+  "description": "MV3 content extension providing Vim-style navigation for WhatsApp Web.",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test tests/config.test.mjs tests/keymap.test.js tests/package.test.mjs tests/policy-check.test.mjs tests/version-sync.test.mjs",
+    "version:check": "node scripts/version-sync.mjs --check",
+    "version:sync": "node scripts/version-sync.mjs",
+    "version:changesets": "changeset version && node scripts/version-sync.mjs",
+    "package": "node scripts/package.mjs",
+    "verify:package": "node scripts/verify-package.mjs",
+    "policy:check": "node scripts/policy-check.mjs",
+    "test:browser": "node tests/browser-smoke.mjs"
+  },
+  "devDependencies": {
+    "@changesets/cli": "^3.0.1"
+  }
+}
