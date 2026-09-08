@@ -21,7 +21,7 @@
     "test:browser": "npm run build && node scripts/browser-smoke-runner.mjs"
   },
   "devDependencies": {
-    "@changesets/cli": "^3.0.1",
+    "@changesets/cli": "^3.0.2",
     "typescript": "^5.9.3"
   }
 }
