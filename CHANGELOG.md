@@ -2,16 +2,20 @@
 
 ## 0.4.0
 
-### Minor Changes
+### Preparation changes
 
-- First stable, unpublished release of the standalone WhatsVim extension, with
-  version synchronization, deterministic packaging, and release preparation.
+- Unpublished 0.4.0 release preparation for the standalone WhatsVim extension.
 - Add a subtle, no-layout-shift border around the active chat composer in
   Insert mode, including light, dark, and forced-colors support.
 - Restore the selected message after Escape cancels a reply, including bounded
   handling for delayed virtualized rows.
+- Improve rapid chat navigation and prevent stale asynchronous commands from
+  reclaiming a newer keyboard or pointer context.
+- `Space` expands the selected message's visible Read more control.
 
-### Known limitations
+### Engineering and release preparation
 
-- Read more expansion currently fails in live WhatsApp Web; fixture coverage
-  does not establish live-site support, and investigation is deferred.
+- Compile strict TypeScript sources before loading or packaging; harden Enter
+  repeat handling and the disposable browser smoke harness.
+- Verify deterministic ZIP payloads and metadata against freshly built files,
+  and pin workflow actions used for release preparation.

@@ -1,0 +1,87 @@
+name: Bug report
+description: Report a reproducible problem with WhatsVim.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        GitHub Issues are public. Never post private messages, contact names, chat screenshots, QR codes, authentication information, or other sensitive data. Use synthetic or fully redacted examples.
+
+  - type: input
+    id: extension_version
+    attributes:
+      label: WhatsVim version
+      description: Find the installed version on your browser's extensions page.
+      placeholder: "0.4.0"
+    validations:
+      required: true
+
+  - type: input
+    id: chromium_version
+    attributes:
+      label: Chromium browser and version
+      placeholder: "Chrome 140.0.7339.81"
+    validations:
+      required: true
+
+  - type: input
+    id: operating_system
+    attributes:
+      label: Operating system
+      placeholder: "Ubuntu 24.04, Windows 11, macOS 15"
+    validations:
+      required: true
+
+  - type: input
+    id: command
+    attributes:
+      label: Feature or command
+      description: Which mode, key, or action was involved?
+      placeholder: "Normal mode, j to select the next message"
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Safe reproduction steps
+      description: Use synthetic or fully redacted details. Do not include private chat content or identifying information.
+      placeholder: |
+        1. Open a test chat with synthetic content.
+        2. Select the message pane.
+        3. Press j.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      placeholder: Describe what you expected WhatsVim to do.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      placeholder: Describe what happened instead, without including sensitive data.
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: Additional safe context
+      description: Optional. Do not attach chat screenshots or paste private page content.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I reproduced this on the current WhatsVim release after reloading both the extension and WhatsApp Web.
+          required: true
+        - label: I confirm this report contains no private messages, contact names, chat screenshots, QR codes, authentication information, or other sensitive data.
+          required: true

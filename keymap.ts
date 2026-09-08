@@ -1,12 +1,12 @@
 (() => {
   "use strict";
 
-  function result(action = null, pendingG = false) {
+  function result(action: WhatsVimAction | null = null, pendingG = false) {
     return Object.freeze({ action, pendingG });
   }
 
-  function resolve(event, state = {}) {
-    const mode = ["insert", "message"].includes(state.mode) ? state.mode : "normal";
+  function resolve(event: WhatsVimKeyEvent, state: WhatsVimKeymapState = {}) {
+    const mode = state.mode === "insert" || state.mode === "message" ? state.mode : "normal";
     const pendingG = state.pendingG === true;
     const reactionOpen = state.reactionOpen === true;
     const mediaOpen = state.mediaOpen === true;

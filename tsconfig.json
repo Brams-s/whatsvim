@@ -1,0 +1,12 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "none",
+    "lib": ["DOM", "DOM.Iterable", "ES2022"],
+    "strict": true,
+    "noEmitOnError": true,
+    "declaration": false,
+    "sourceMap": false
+  },
+  "files": ["runtime-globals.d.ts", "keymap.ts", "content.ts"]
+}

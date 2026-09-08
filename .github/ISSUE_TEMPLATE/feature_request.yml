@@ -1,0 +1,51 @@
+name: Feature request
+description: Suggest a change to WhatsVim's keyboard workflow.
+title: "[Feature]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        GitHub Issues are public. Never post private messages, contact names, chat screenshots, QR codes, authentication information, or other sensitive data. Use synthetic or fully redacted examples.
+
+  - type: textarea
+    id: purpose
+    attributes:
+      label: Purpose and use case
+      description: What are you trying to accomplish, and when would this be useful?
+      placeholder: Describe the workflow using synthetic or fully redacted details.
+    validations:
+      required: true
+
+  - type: textarea
+    id: desired_behavior
+    attributes:
+      label: Desired behavior
+      description: Describe the command, interaction, or result you would like.
+      placeholder: Explain how the feature should behave from start to finish.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Optional. How do you handle this workflow today?
+
+  - type: textarea
+    id: privacy_implications
+    attributes:
+      label: Privacy implications
+      description: Would this require new page data, site access, storage, or network behavior? Write "None known" if it would not.
+      placeholder: "None known; this would act only on an existing visible control."
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues for a similar request.
+          required: true
+        - label: I confirm this request contains no private messages, contact names, chat screenshots, QR codes, authentication information, or other sensitive data.
+          required: true

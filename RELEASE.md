@@ -33,23 +33,39 @@ cannot reapply that prior release material.
 
 ## Package and validation
 
-1. Review the canonical runtime changes and update docs/privacy disclosures.
-2. Run `npm run version:check`, `npm test`, `npm run package`, and `npm run
+1. Review the canonical TypeScript runtime sources and update docs/privacy disclosures.
+2. Run `npm run typecheck`, `npm run version:check`, `npm test`, `npm run package`, and `npm run
    verify:package`.
-3. Confirm a repeated `npm run package` produces the same ZIP checksum.
-4. Load the generated source directory unpacked and complete the manual real
+3. Confirm a repeated `npm run package` produces the same ZIP checksum. The
+   verifier checks ZIP local and central headers, payload CRCs, and byte equality
+   with the freshly built allowlisted working-tree files; do not verify a stale ZIP.
+4. Run `npm ci && npm run build`, load the generated root directory unpacked,
+   and complete the manual real
    WhatsApp Web validation in [DEVELOPMENT.md](DEVELOPMENT.md).
 5. Inspect the ZIP listing: it must contain `manifest.json`, `LICENSE`,
    `content.css`, `keymap.js`, `content.js`, and the four manifest-referenced
    PNGs under `icons/`, with `manifest.json` and `LICENSE` at the ZIP root (no
    enclosing directory).
-6. For a stable, CWS-eligible version only, upload that ZIP as a dashboard
-   **draft**. The Chrome Web Store dashboard's
-   upload/validation outcome is the final authoritative packaging validation;
-   resolve its findings before publishing.
-7. Record the version, validation browser/version, date, package checksum, and
+6. Complete the Pages and Issues gate below before using their URLs in a store
+   dashboard.
+7. For a stable, CWS-eligible version only, upload that ZIP as a dashboard
+   **draft**. The Chrome Web Store dashboard's upload/validation outcome is the
+   final authoritative packaging validation; resolve its findings before any
+   publication decision.
+8. Record the version, validation browser/version, date, package checksum, and
    dashboard validation result in the release notes maintained by the release
    owner.
+
+## Pages and Issues gate
+
+After an authorized push only, configure GitHub Pages to deploy from the `main`
+branch's `/docs` folder (or an explicitly approved Pages branch/source). Then
+visit <https://brams-s.github.io/whatsvim/> anonymously, without a logged-in
+GitHub session or JavaScript dependence, and verify the privacy and support
+links and the policy text before entering that URL in a dashboard. GitHub Issue
+forms become publicly usable only after their files are pushed; verify their
+public presentation then. No workflow in this repository enables Pages, uploads
+to the Chrome Web Store, or publishes a store listing.
 
 ## Chrome Web Store checklist
 
@@ -65,7 +81,8 @@ Before submission, complete the current official guidance:
 - [Privacy / User Data policy](https://developer.chrome.com/docs/webstore/program-policies/user-data/)
   and [Limited Use](https://developer.chrome.com/docs/webstore/program-policies/user-data/#limited-use):
   make accurate disclosures and retain only the data necessary for the stated
-  single purpose. The current extension has no data collection or transmission.
+  single purpose. The current extension transiently handles visible interface
+  content and command input locally, without extension transmission or persistence.
 
 The listing must accurately state the extension's single purpose, permissions,
 support contact, and privacy practices. All executable code must ship in the
@@ -81,16 +98,16 @@ must have documented provenance before release.
 
 ## Changesets and GitHub automation
 
-Create a changeset for each user-facing release change, then run `npm run
-version:changesets`. The repository's Changesets config versions private
+Until the first `0.4.0` tag and publication, candidate-preparation changes may
+remain part of the still-unpublished `0.4.0`; `changeset status` therefore
+reports that no changesets exist. After that first release, create a changeset
+for each user-facing release change, then run `npm run version:changesets`.
+The repository's Changesets config versions private
 packages, never commits, and never tags or publishes. Its wrapper synchronizes
 the manifest first and then only the root lockfile version fields. The
-`changesets/action@v2` workflow is version-PR-only: it uses `version-script`,
-has no publish command, and has no npm publishing token.
-
-The repository currently has no initial Git commit, so Changesets CLI status
-cannot run yet. After that commit exists, use `npx changeset status` to inspect
-future normal-mode changesets before versioning.
+immutable Changesets action workflow is version-PR-only: it uses
+`version-script`, has no publish command, and has no npm publishing token. Use
+`npx changeset status` to inspect future normal-mode changesets before versioning.
 
 The manual **Promote approved release** workflow accepts only a full 40-hex
 approved commit SHA. A read-only validation job checks that SHA is an ancestor
@@ -101,10 +118,17 @@ scripts run, then rebuilds/verifies and creates a GitHub Release with ZIP and
 checksum. It detects prerelease status from the package version and has no
 Chrome Web Store action.
 
-This bootstrap has local Git but no first local commit or approved remote. A
-first commit, approved GitHub remote, protected/approved `main`, and Actions
-permission settings remain prerequisites; this work does not create or change
-any of them.
+Before any remote release action, manually review the Chrome Web Store account
+owner/trader status, version history, two-step verification, dashboard draft,
+and whether publication is deferred or immediate. These are external account
+decisions; neither the workflow nor this repository uploads to the Chrome Web
+Store.
+
+An approved GitHub remote, verified branch protection for `main`, a protected
+release environment with the required reviewers, and Actions permission settings
+remain prerequisites before enabling publication. The workflow intentionally
+does not declare that environment until its remote protection is configured;
+this work does not create or change any remote setting.
 
 ## Firefox path (deferred)
 

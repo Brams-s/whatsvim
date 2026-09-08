@@ -1,8 +1,9 @@
 # WhatsVim
 
 A minimal Manifest V3 Chromium content extension for Vim-style navigation on
-`https://web.whatsapp.com/*`. It has no background worker, build step, or
-runtime dependency.
+`https://web.whatsapp.com/*`. It has no background worker or runtime
+dependency. Its checked-in TypeScript sources are compiled with `tsc` to the
+manifest's classic JavaScript paths.
 
 WhatsVim is unofficial and is not affiliated with, endorsed by, or sponsored
 by WhatsApp or Meta.
@@ -11,8 +12,9 @@ by WhatsApp or Meta.
 
 1. Open `chrome://extensions` (or `chromium://extensions`).
 2. Enable **Developer mode**.
-3. Choose **Load unpacked** and select this project directory.
-4. Open or reload WhatsApp Web.
+3. Run `npm ci && npm run build` in this project directory.
+4. Choose **Load unpacked** and select this project directory.
+5. Open or reload WhatsApp Web.
 
 ### Vimium compatibility
 
@@ -39,7 +41,7 @@ the visible indicator remains Normal.
 | Normal | `/` / `?` | WhatsApp search / shortcut help |
 | Selected message | `r`; `Shift+R`; `e` | Reply; react; edit |
 | Selected message | `l` / `o` | Open selected media; `l` selects the message pane when no media is openable |
-| Selected message | `Space` | Experimental: expand the selected message’s Read more control |
+| Selected message | `Space` | Expand the selected message’s visible Read more control |
 | Selected message | `h` | Select the chat list |
 | Selected message | `i`, `a`, `Enter` | Focus composer; `Esc` returns to selection |
 | Reaction picker | `h` / `j` / `k` / `l`, `Enter` / `Space` | Move / choose emoji |
@@ -59,18 +61,16 @@ rollout. See [ARCHITECTURE.md](ARCHITECTURE.md) for the selector and fallback
 strategy. Firefox packaging is deliberately deferred; see
 [RELEASE.md](RELEASE.md).
 
-## Known limitations
-
-- Read more expansion currently fails in live WhatsApp Web. Investigation is
-  deferred; fixture coverage does not establish live-site support.
-
 ## Development
 
-Use Node 22 or later. Runtime packaging remains dependency-free; the checked-in
-development dependency supports Changesets only:
+Use Node `^22.11 || ^24 || >=26` and npm `>=10.9`. Runtime packaging remains
+dependency-free; TypeScript and Changesets are development dependencies only.
+`content.ts` and `keymap.ts` are the runtime sources; `npm run build` emits the
+ignored root `content.js` and `keymap.js` files consumed by the manifest:
 
 ```sh
 npm ci
+npm run typecheck
 npm run version:check
 npm test
 npm run package
@@ -80,7 +80,8 @@ npm run verify:package
 `package.json.version` is the source of truth. The version tool derives the
 numeric `manifest.version`, exact `manifest.version_name`, and deterministic
 artifact name. The ZIP is written as
-`dist/whatsvim-<package-version>.zip` and contains the four runtime files plus
+`dist/whatsvim-<package-version>.zip` and contains the manifest, license, three
+runtime files (`content.css`, emitted `keymap.js`, and emitted `content.js`), plus
 the manifest-referenced PNG icons. It exposes `manifest.json` at its archive
 root (not in an enclosing project folder). See [DEVELOPMENT.md](DEVELOPMENT.md)
 for commands, Changesets, and browser smoke testing.
@@ -92,3 +93,13 @@ for commands, Changesets, and browser smoke testing.
 - [DEVELOPMENT.md](DEVELOPMENT.md) — commands and test prerequisites
 - [RELEASE.md](RELEASE.md) — release and store checklist
 - [ATTRIBUTION.md](ATTRIBUTION.md) — local-source migration record
+
+## Privacy and support
+
+- [Privacy policy in this repository](PRIVACY.md) and the public repository copy
+  at <https://github.com/Brams-s/whatsvim/blob/main/PRIVACY.md>
+- Support: <https://github.com/Brams-s/whatsvim/issues> — do not post private
+  messages, contact details, or other sensitive information in a public issue.
+- Planned hosted privacy URL: <https://brams-s.github.io/whatsvim/>. GitHub Pages
+  must be enabled and this URL checked anonymously before it is used in a store
+  dashboard or presented as a live policy URL.

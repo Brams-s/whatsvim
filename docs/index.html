@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta
+      name="description"
+      content="How the WhatsVim browser extension handles data, including site access, retention, network boundaries, and support."
+    >
+    <title>Privacy &amp; Support · WhatsVim</title>
+    <link rel="icon" href="assets/whatsvim-mark.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="assets/site.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Skip to privacy policy</a>
+
+    <header class="site-header">
+      <div class="shell header-inner">
+        <a class="brand" href="#top" aria-label="WhatsVim privacy and support home">
+          <img src="assets/whatsvim-mark.svg" width="44" height="44" alt="">
+          <span>WhatsVim</span>
+        </a>
+        <nav aria-label="Primary navigation">
+          <a href="#privacy">Privacy</a>
+          <a href="https://github.com/Brams-s/whatsvim">Source</a>
+          <a class="support-link" href="https://github.com/Brams-s/whatsvim/issues">Support</a>
+        </nav>
+      </div>
+    </header>
+
+    <main id="main-content">
+      <section class="hero" id="top" aria-labelledby="page-title">
+        <div class="shell hero-grid">
+          <div class="hero-copy">
+            <p class="eyebrow">Privacy policy · Effective September 6, 2026</p>
+            <h1 id="page-title">A keyboard layer,<br><em>not a data layer.</em></h1>
+            <p class="lede">
+              WhatsVim adds Vim-style keyboard navigation to WhatsApp Web. It
+              handles command input transiently and may keep limited
+              visible-interface navigation state in page memory between commands.
+              It does not send that information to the developer or third parties,
+              or save it in extension storage or files.
+            </p>
+            <div class="hero-actions" aria-label="Policy actions">
+              <a class="button button-primary" href="#privacy">Read the policy</a>
+              <a class="button button-secondary" href="https://github.com/Brams-s/whatsvim/issues">
+                Get support on GitHub
+              </a>
+            </div>
+          </div>
+
+          <aside class="snapshot" aria-labelledby="snapshot-title">
+            <div class="snapshot-heading">
+              <img
+                src="assets/whatsvim-mark.svg"
+                width="64"
+                height="64"
+                alt="WhatsVim original navigation mark"
+              >
+              <div>
+                <p class="kicker">At a glance</p>
+                <h2 id="snapshot-title">Local by design</h2>
+              </div>
+            </div>
+            <dl class="signal-list">
+              <div>
+                <dt>Site access</dt>
+                <dd><code>web.whatsapp.com</code> only</dd>
+              </div>
+              <div>
+                <dt>API permissions</dt>
+                <dd>None requested</dd>
+              </div>
+              <div>
+                <dt>Persistent storage</dt>
+                <dd>None</dd>
+              </div>
+              <div>
+                <dt>Extension network calls</dt>
+                <dd>None</dd>
+              </div>
+            </dl>
+          </aside>
+        </div>
+      </section>
+
+      <div class="shell policy-layout" id="privacy">
+        <aside class="contents" aria-label="On this page">
+          <p>On this page</p>
+          <ol>
+            <li><a href="#summary">Plain-language summary</a></li>
+            <li><a href="#scope">What WhatsVim can access</a></li>
+            <li><a href="#data">Data categories</a></li>
+            <li><a href="#retention">Retention and sharing</a></li>
+            <li><a href="#network">Network boundary</a></li>
+            <li><a href="#limited-use">Limited Use</a></li>
+            <li><a href="#changes">Policy changes</a></li>
+            <li><a href="#support">Support and source</a></li>
+          </ol>
+        </aside>
+
+        <article class="policy" aria-label="WhatsVim privacy policy">
+          <section id="summary" aria-labelledby="summary-title">
+            <p class="section-number">01</p>
+            <h2 id="summary-title">Plain-language summary</h2>
+            <p class="section-intro">
+              WhatsVim is a single-purpose browser extension. Its bundled content
+              scripts run locally only on <code>https://web.whatsapp.com/*</code>
+              to provide keyboard navigation and editing-mode assistance.
+            </p>
+            <div class="statement-grid" aria-label="Privacy summary">
+              <div class="statement statement-positive">
+                <span aria-hidden="true">✓</span>
+                <p><strong>It does</strong> handle command input transiently and may keep limited visible-interface navigation state in page memory between commands.</p>
+              </div>
+              <div class="statement statement-negative">
+                <span aria-hidden="true">×</span>
+                <p><strong>It does not</strong> send that information to the developer or third parties, save it in extension storage or files, share or sell it, or use it for advertising, profiling, or unrelated purposes.</p>
+              </div>
+            </div>
+          </section>
+
+          <section id="scope" aria-labelledby="scope-title">
+            <p class="section-number">02</p>
+            <h2 id="scope-title">What WhatsVim can access</h2>
+            <p>
+              To respond to commands, WhatsVim can inspect and interact with the
+              visible WhatsApp Web interface. This can include chat labels,
+              message rows, media controls, reply or reaction controls, editing
+              controls, the Read more control, and the message composer. Keyboard
+              command input is handled only for the current action. Limited
+              navigation state—selected DOM elements, a message identity or key,
+              and return focus or scroll state—may remain in page or content-script
+              memory between commands until replaced or cleared, or until the page
+              unloads or the extension context is destroyed. This state supports
+              navigation targets and position; it is not a separately stored
+              archive of raw message content.
+            </p>
+            <p>
+              That access is limited by the extension manifest to WhatsApp Web.
+              WhatsVim cannot run on other sites under its current configuration.
+              It declares no API permissions or host permissions, and has no
+              background worker.
+            </p>
+            <div class="scope-line" aria-label="Extension behavior flow">
+              <span>Your command</span>
+              <span aria-hidden="true">→</span>
+              <span>Local page action</span>
+              <span aria-hidden="true">→</span>
+              <span>No extension copy saved</span>
+            </div>
+          </section>
+
+          <section id="data" aria-labelledby="data-title">
+            <p class="section-number">03</p>
+            <h2 id="data-title">Data categories</h2>
+            <p>
+              Command input is handled transiently for the current action. Limited
+              navigation state may remain in page or content-script memory between
+              commands until replaced or cleared, or until the page unloads or the
+              extension context is destroyed. Neither is sent to the developer or
+              third parties or written to extension storage or files.
+            </p>
+            <dl class="data-list">
+              <div>
+                <dt>Keyboard command input</dt>
+                <dd>Keys used for navigation, selection, mode changes, and visible interface actions, handled only for the current action.</dd>
+              </div>
+              <div>
+                <dt>Interface and navigation state</dt>
+                <dd>Visible page elements needed to identify a target, plus limited state such as selected DOM elements, a message identity or key, and return focus or scroll state.</dd>
+              </div>
+              <div>
+                <dt>Usage and diagnostics</dt>
+                <dd>Not recorded. There are no analytics, telemetry, tracking pixels, fingerprints, or crash-reporting services.</dd>
+              </div>
+              <div>
+                <dt>Account and authentication data</dt>
+                <dd>Not requested or stored by WhatsVim. Sign-in and account traffic belong to WhatsApp Web, not this extension.</dd>
+              </div>
+            </dl>
+          </section>
+
+          <section id="retention" aria-labelledby="retention-title">
+            <p class="section-number">04</p>
+            <h2 id="retention-title">Retention and sharing</h2>
+            <p>
+              Keyboard command input is handled transiently for the current action.
+              Limited navigation state—selected DOM elements, a message identity or
+              key, and return focus or scroll state—may remain in page or
+              content-script memory between commands until replaced or cleared, or
+              until the page unloads or the extension context is destroyed. None
+              of this is written to extension storage or files. WhatsVim does not
+              use local storage, synced storage, a database, or a remote service to
+              persist personal data.
+            </p>
+            <p>
+              WhatsVim does not share or sell the information it handles, show
+              advertising, build user profiles, or provide that information to
+              data brokers or other third parties. Because it creates no
+              persistent user-data store, it has no stored personal data to export
+              or delete.
+            </p>
+          </section>
+
+          <section id="network" aria-labelledby="network-title">
+            <p class="section-number">05</p>
+            <h2 id="network-title">Network boundary</h2>
+            <p>
+              WhatsVim makes no extension-initiated network requests. It has no
+              analytics endpoint, telemetry service, remote configuration, or
+              remotely hosted runtime code. Its content scripts and styles are
+              bundled with the extension.
+            </p>
+            <div class="note">
+              <p class="note-label">Important boundary</p>
+              <p>
+                WhatsApp Web makes its own network requests to operate messaging
+                and account features. That traffic is controlled by WhatsApp and
+                is outside WhatsVim’s behavior and this policy.
+              </p>
+            </div>
+          </section>
+
+          <section id="limited-use" aria-labelledby="limited-use-title">
+            <p class="section-number">06</p>
+            <h2 id="limited-use-title">Limited Use statement</h2>
+            <p>
+              WhatsVim does not use Google APIs or receive Google user data. The
+              information it processes on WhatsApp Web is used only to provide
+              the user-facing keyboard navigation and mode behavior described in
+              this policy. It is not used for advertising, profiling, credit,
+              lending, or any purpose unrelated to that single function.
+            </p>
+          </section>
+
+          <section id="changes" aria-labelledby="changes-title">
+            <p class="section-number">07</p>
+            <h2 id="changes-title">Policy changes</h2>
+            <p>
+              This policy reflects WhatsVim’s current implementation. If a future
+              version adds data handling, storage, telemetry, network access, or
+              access to another site, this page will be updated to explain the
+              change before that version is released.
+            </p>
+            <p>
+              No browser extension can promise absolute security. WhatsVim
+              reduces exposure by minimizing access, keeping execution local,
+              and not maintaining a persistent user-data store.
+            </p>
+          </section>
+
+          <section class="support-section" id="support" aria-labelledby="support-title">
+            <p class="section-number">08</p>
+            <h2 id="support-title">Support and source</h2>
+            <p>
+              Need help, found a bug, or have a privacy question? Open an issue
+              in the public repository. Please do not include private messages,
+              contact details, screenshots of personal chats, or other sensitive
+              information in a public issue.
+            </p>
+            <div class="hero-actions">
+              <a class="button button-primary" href="https://github.com/Brams-s/whatsvim/issues">Open a support issue</a>
+              <a class="text-link" href="https://github.com/Brams-s/whatsvim">View source repository <span aria-hidden="true">↗</span></a>
+            </div>
+          </section>
+        </article>
+      </div>
+    </main>
+
+    <footer class="site-footer">
+      <div class="shell footer-inner">
+        <div>
+          <a class="brand footer-brand" href="#top">
+            <img src="assets/whatsvim-mark.svg" width="36" height="36" alt="">
+            <span>WhatsVim</span>
+          </a>
+          <p>Vim-style navigation for WhatsApp Web.</p>
+        </div>
+        <div class="footer-meta">
+          <p><strong>Policy effective:</strong> September 6, 2026</p>
+          <p>Unofficial and not affiliated with, endorsed by, or sponsored by WhatsApp or Meta.</p>
+        </div>
+      </div>
+    </footer>
+  </body>
+</html>

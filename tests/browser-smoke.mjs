@@ -2,10 +2,22 @@
 
 import assert from "node:assert/strict";
 
-const endpoint = process.env.CDP_ENDPOINT || "http://127.0.0.1:9222";
+const endpoint = process.env.WHATSVIM_SMOKE_ENDPOINT;
+const targetToken = process.env.WHATSVIM_SMOKE_TARGET_TOKEN;
+assert.ok(endpoint, "Browser smoke requires the runner-owned debugging endpoint");
+assert.ok(targetToken, "Browser smoke requires the runner-owned fixture target token");
 const pages = await fetch(`${endpoint}/json/list`).then((response) => response.json());
-const page = pages.find((candidate) => candidate.type === "page" && candidate.url.includes("web.whatsapp.com"));
-assert.ok(page, "WhatsApp test page is available through CDP");
+const designatedPages = pages.filter((candidate) => {
+  if (candidate.type !== "page") return false;
+  try {
+    const url = new URL(candidate.url);
+    return url.origin === "https://web.whatsapp.com" && url.searchParams.get("whatsvim-smoke") === targetToken;
+  } catch {
+    return false;
+  }
+});
+assert.equal(designatedPages.length, 1, "Browser smoke requires exactly one runner-designated WhatsApp fixture target");
+const [page] = designatedPages;
 
 const socket = new WebSocket(page.webSocketDebuggerUrl);
 await new Promise((resolve, reject) => {
@@ -141,6 +153,26 @@ async function press({
   await delay(150);
 }
 
+async function tapWithoutDelay({ key, code, virtualKeyCode, modifiers = 0, text = "" }) {
+  await call("Input.dispatchKeyEvent", {
+    type: "keyDown",
+    key,
+    code,
+    windowsVirtualKeyCode: virtualKeyCode,
+    nativeVirtualKeyCode: virtualKeyCode,
+    modifiers,
+    text,
+  });
+  await call("Input.dispatchKeyEvent", {
+    type: "keyUp",
+    key,
+    code,
+    windowsVirtualKeyCode: virtualKeyCode,
+    nativeVirtualKeyCode: virtualKeyCode,
+    modifiers,
+  });
+}
+
 async function pressWithDuplicateKeyDowns({
   key,
   code,
@@ -237,6 +269,9 @@ await evaluate(`(() => {
         <div id="chat-alpha" role="row" data-testid="list-item-0" style="display:block;width:280px;height:50px"><div role="gridcell"><div data-testid="cell-frame-container"><span data-testid="cell-frame-title">Alpha</span></div></div></div>
         <div id="chat-bravo" role="row" data-testid="list-item-1" style="display:block;width:280px;height:50px"><div role="gridcell"><div data-testid="cell-frame-container"><span data-testid="cell-frame-title">Bravo</span></div></div></div>
         <div id="chat-charlie" role="row" data-testid="list-item-2" style="display:block;width:280px;height:50px"><div role="gridcell"><div data-testid="cell-frame-container"><span data-testid="cell-frame-title">Charlie</span></div></div></div>
+        <div id="chat-delta" role="row" data-testid="list-item-3" style="display:block;width:280px;height:50px"><div role="gridcell"><div data-testid="cell-frame-container"><span data-testid="cell-frame-title">Delta</span></div></div></div>
+        <div id="chat-echo" role="row" data-testid="list-item-4" style="display:block;width:280px;height:50px"><div role="gridcell"><div data-testid="cell-frame-container"><span data-testid="cell-frame-title">Echo</span></div></div></div>
+        <div id="chat-foxtrot" role="row" data-testid="list-item-5" style="display:block;width:280px;height:50px"><div role="gridcell"><div data-testid="cell-frame-container"><span data-testid="cell-frame-title">Foxtrot</span></div></div></div>
       </div>
     </section>
     <section id="main" style="display:none;width:500px;height:500px">
@@ -262,18 +297,53 @@ await evaluate(`(() => {
   \`;
   document.body.prepend(fixture);
 
+  const race = {
+    delayed: false,
+    fail: false,
+    holdFirst: false,
+    released: false,
+    release: null,
+    starts: [],
+    acks: [],
+    outstanding: 0,
+    maxOutstanding: 0,
+    fallbacks: 0,
+  };
+  globalThis.__whatsvimFixtureRace = race;
+  const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+  async function activateFixtureChat(row) {
+    const label = row.querySelector('[data-testid="cell-frame-title"]').textContent;
+    race.starts.push({ label, time: performance.now() });
+    race.outstanding += 1;
+    race.maxOutstanding = Math.max(race.maxOutstanding, race.outstanding);
+    if (race.delayed) {
+      if (race.holdFirst && !race.released && race.starts.length === 1) {
+        await new Promise((resolve) => { race.release = resolve; });
+      } else {
+        await wait(100);
+      }
+    }
+    if (!race.fail) {
+      for (const selected of fixture.querySelectorAll('[aria-selected="true"]')) selected.removeAttribute("aria-selected");
+      row.setAttribute("aria-selected", "true");
+      fixture.querySelector("#test-chat-title").textContent = label;
+      fixture.querySelector("#main").style.display = "block";
+      fixture.querySelector("#test-composer").focus();
+    }
+    race.acks.push({ label, time: performance.now(), acknowledged: !race.fail });
+    race.outstanding -= 1;
+  }
+
   for (const row of fixture.querySelectorAll('[role="row"]')) {
     if (!row.querySelector('[data-testid="cell-frame-container"]')) continue;
     const cell = row.querySelector('[data-testid="cell-frame-container"]');
     cell.addEventListener("mousedown", () => {
       row.dataset.clicked = "true";
       row.dataset.clickCount = String(Number(row.dataset.clickCount || 0) + 1);
-      const label = row.querySelector('[data-testid="cell-frame-title"]').textContent;
-      const title = fixture.querySelector("#test-chat-title");
-      title.textContent = label;
-      fixture.querySelector("#main").style.display = "block";
-      fixture.querySelector("#test-composer").focus();
+      void activateFixtureChat(row);
     });
+    cell.addEventListener("click", () => { race.fallbacks += 1; });
   }
 
   function mouseActionButton(attributes, label) {
@@ -433,7 +503,11 @@ await evaluate(`(() => {
       });
       menu.append(item);
     }
-    document.body.append(menu);
+    if (fixture.dataset.delayedMessageMenu === "true") {
+      setTimeout(() => document.body.append(menu), 180);
+    } else {
+      document.body.append(menu);
+    }
   }
 
   for (const container of fixture.querySelectorAll('[data-testid="msg-container"]')) {
@@ -446,6 +520,11 @@ await evaluate(`(() => {
       container.append(menu, reaction);
     });
   }
+
+  fixture.querySelector("#test-composer").addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    fixture.dataset.nativeSendCount = String(Number(fixture.dataset.nativeSendCount || 0) + 1);
+  });
 
   fixture.querySelector("#test-read-more").addEventListener("click", () => {
     fixture.dataset.readMoreExpanded = "true";
@@ -577,12 +656,282 @@ assert.equal(firstNavigation.charlie, undefined, JSON.stringify(firstNavigation)
 assert.equal(await evaluate('document.activeElement?.id'), "whatsvim-sentinel");
 assert.equal(await evaluate('document.querySelector("#whatsvim-mode")?.dataset.mode'), "normal");
 
+async function resetChatRace(selectedId) {
+  await evaluate(`(() => {
+    const fixture = document.querySelector("#whatsvim-test-fixture");
+    const row = document.querySelector(${JSON.stringify(selectedId)});
+    const race = globalThis.__whatsvimFixtureRace;
+    for (const selected of fixture.querySelectorAll('[aria-selected="true"]')) selected.removeAttribute("aria-selected");
+    row.setAttribute("aria-selected", "true");
+    fixture.querySelector("#test-chat-title").textContent = row.querySelector('[data-testid="cell-frame-title"]').textContent;
+    fixture.querySelector("#test-composer").textContent = "race composer remains unchanged";
+    Object.assign(race, {
+      delayed: true,
+      fail: false,
+      holdFirst: true,
+      released: false,
+      release: null,
+      starts: [],
+      acks: [],
+      outstanding: 0,
+      maxOutstanding: 0,
+      fallbacks: 0,
+    });
+    row.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, composed: true }));
+    document.querySelector("#whatsvim-sentinel").focus();
+  })()`);
+  await delay(20);
+}
+
+async function releaseChatRace() {
+  await evaluate(`(() => {
+    const race = globalThis.__whatsvimFixtureRace;
+    race.released = true;
+    race.release?.();
+  })()`);
+}
+
+await resetChatRace("#chat-alpha");
+const composerBeforeChatRace = await evaluate('document.querySelector("#test-composer")?.textContent');
+for (let index = 0; index < 4; index += 1) {
+  await tapWithoutDelay({ key: "j", code: "KeyJ", virtualKeyCode: 74, text: "j" });
+}
+await waitFor('globalThis.__whatsvimFixtureRace.starts.length === 1', 200);
+await delay(80);
+const heldChatRace = await evaluate('globalThis.__whatsvimFixtureRace');
+assert.deepEqual(heldChatRace.starts.map((entry) => entry.label), ["Bravo"], JSON.stringify(heldChatRace));
+assert.equal(heldChatRace.acks.length, 0, JSON.stringify(heldChatRace));
+assert.equal(heldChatRace.fallbacks, 0, JSON.stringify(heldChatRace));
+await releaseChatRace();
+await waitFor('globalThis.__whatsvimFixtureRace.acks.length === 4', 1500);
+const rapidChatRace = await evaluate('globalThis.__whatsvimFixtureRace');
+assert.deepEqual(rapidChatRace.starts.map((entry) => entry.label), ["Bravo", "Charlie", "Delta", "Echo"], JSON.stringify(rapidChatRace));
+assert.equal(rapidChatRace.maxOutstanding, 1, JSON.stringify(rapidChatRace));
+assert.equal(rapidChatRace.fallbacks, 0, JSON.stringify(rapidChatRace));
+assert.deepEqual(rapidChatRace.acks.map((entry) => entry.label), ["Bravo", "Charlie", "Delta", "Echo"], JSON.stringify(rapidChatRace));
+for (let index = 1; index < rapidChatRace.starts.length; index += 1) {
+  assert.ok(rapidChatRace.starts[index].time >= rapidChatRace.acks[index - 1].time, JSON.stringify(rapidChatRace));
+}
+assert.equal(await evaluate('document.querySelector("#test-chat-title")?.textContent'), "Echo");
+assert.equal(await evaluate('document.querySelector("#test-composer")?.textContent'), composerBeforeChatRace);
+
+await resetChatRace("#chat-bravo");
+for (const key of ["j", "k", "j"]) {
+  await tapWithoutDelay({ key, code: key === "j" ? "KeyJ" : "KeyK", virtualKeyCode: key === "j" ? 74 : 75, text: key });
+}
+await waitFor('globalThis.__whatsvimFixtureRace.starts.length === 1', 200);
+await releaseChatRace();
+await waitFor('globalThis.__whatsvimFixtureRace.acks.length === 3', 1200);
+const mixedChatRace = await evaluate('globalThis.__whatsvimFixtureRace');
+assert.deepEqual(mixedChatRace.starts.map((entry) => entry.label), ["Charlie", "Bravo", "Charlie"], JSON.stringify(mixedChatRace));
+assert.equal(mixedChatRace.maxOutstanding, 1, JSON.stringify(mixedChatRace));
+
+await resetChatRace("#chat-alpha");
+for (let index = 0; index < 3; index += 1) {
+  await tapWithoutDelay({ key: "j", code: "KeyJ", virtualKeyCode: 74, text: "j" });
+}
+await waitFor('globalThis.__whatsvimFixtureRace.starts.length === 1', 200);
+await tapWithoutDelay({ key: "Escape", code: "Escape", virtualKeyCode: 27 });
+await releaseChatRace();
+await delay(250);
+const cancelledChatRace = await evaluate('globalThis.__whatsvimFixtureRace');
+assert.deepEqual(cancelledChatRace.starts.map((entry) => entry.label), ["Bravo"], JSON.stringify(cancelledChatRace));
+assert.equal(cancelledChatRace.fallbacks, 0, JSON.stringify(cancelledChatRace));
+assert.equal(await evaluate('document.activeElement?.id'), "whatsvim-sentinel");
+
+await resetChatRace("#chat-alpha");
+for (let index = 0; index < 3; index += 1) {
+  await tapWithoutDelay({ key: "j", code: "KeyJ", virtualKeyCode: 74, text: "j" });
+}
+await waitFor('globalThis.__whatsvimFixtureRace.starts.length === 1', 200);
+await evaluate(`(() => {
+  const composer = document.querySelector("#test-composer");
+  composer.focus();
+  composer.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, composed: true }));
+})()`);
+await releaseChatRace();
+await delay(350);
+const pointerEditChatRace = await evaluate('globalThis.__whatsvimFixtureRace');
+assert.deepEqual(pointerEditChatRace.starts.map((entry) => entry.label), ["Bravo"], JSON.stringify(pointerEditChatRace));
+assert.equal(await evaluate('document.activeElement?.id'), "test-composer");
+assert.equal(await evaluate('document.querySelector("#whatsvim-mode")?.dataset.mode'), "insert");
+
+await resetChatRace("#chat-alpha");
+await evaluate('document.querySelector("#test-composer").textContent = ""');
+await evaluate('document.querySelector("#main").style.display = "block"; document.querySelector("#test-composer").textContent = "Ctrl+V owns the newest command"');
+await tapWithoutDelay({ key: "j", code: "KeyJ", virtualKeyCode: 74, text: "j" });
+await waitFor('globalThis.__whatsvimFixtureRace.starts.length === 1', 200);
+await tapWithoutDelay({ key: "l", code: "KeyL", virtualKeyCode: 76, text: "l" });
+await call("Input.dispatchKeyEvent", {
+  type: "keyDown", key: "v", code: "KeyV", windowsVirtualKeyCode: 86, nativeVirtualKeyCode: 86, modifiers: 2,
+});
+await call("Input.dispatchKeyEvent", {
+  type: "keyUp", key: "v", code: "KeyV", windowsVirtualKeyCode: 86, nativeVirtualKeyCode: 86, modifiers: 2,
+});
+await releaseChatRace();
+await delay(250);
+assert.equal(await evaluate('document.querySelector("#whatsvim-mode")?.dataset.mode'), "insert");
+assert.equal(await evaluate('document.activeElement?.id'), "test-composer");
+assert.equal(await evaluate('document.querySelector("#whatsvim-mode")?.dataset.pane'), "chat");
+
+await resetChatRace("#chat-alpha");
+await evaluate('document.querySelector("#test-composer").textContent = ""');
+await evaluate('document.querySelector("#main").style.display = "none"; document.querySelector("#test-composer").textContent = "deferred Ctrl+V draft"');
+await tapWithoutDelay({ key: "j", code: "KeyJ", virtualKeyCode: 74, text: "j" });
+await waitFor('globalThis.__whatsvimFixtureRace.starts.length === 1', 200);
+await tapWithoutDelay({ key: "l", code: "KeyL", virtualKeyCode: 76, text: "l" });
+await call("Input.dispatchKeyEvent", {
+  type: "keyDown", key: "v", code: "KeyV", windowsVirtualKeyCode: 86, nativeVirtualKeyCode: 86, modifiers: 2,
+});
+await call("Input.dispatchKeyEvent", {
+  type: "keyUp", key: "v", code: "KeyV", windowsVirtualKeyCode: 86, nativeVirtualKeyCode: 86, modifiers: 2,
+});
+await tapWithoutDelay({ key: "Escape", code: "Escape", virtualKeyCode: 27 });
+await releaseChatRace();
+await delay(250);
+assert.equal(await evaluate('document.querySelector("#whatsvim-mode")?.dataset.mode'), "normal");
+assert.equal(await evaluate('document.activeElement?.id'), "whatsvim-sentinel");
+assert.equal(await evaluate('document.querySelector("#test-composer").textContent'), "deferred Ctrl+V draft");
+
+await resetChatRace("#chat-alpha");
+await evaluate('globalThis.__whatsvimFixtureRace.delayed = false; document.querySelector("#test-composer").textContent = ""');
+await tapWithoutDelay({ key: "j", code: "KeyJ", virtualKeyCode: 74, text: "j" });
+await waitFor('globalThis.__whatsvimFixtureRace.starts.length === 1', 200);
+await tapWithoutDelay({ key: "i", code: "KeyI", virtualKeyCode: 73, text: "i" });
+await releaseChatRace();
+await waitFor('globalThis.__whatsvimFixtureRace.acks.length === 1', 400);
+await tapWithoutDelay({ key: "Escape", code: "Escape", virtualKeyCode: 27 });
+await evaluate('globalThis.__whatsvimFixtureRace.delayed = false');
+await tapWithoutDelay({ key: "j", code: "KeyJ", virtualKeyCode: 74, text: "j" });
+await waitFor('globalThis.__whatsvimFixtureRace.starts.length === 2', 400);
+const composerCancelChatRace = await evaluate('globalThis.__whatsvimFixtureRace');
+assert.deepEqual(composerCancelChatRace.starts.map((entry) => entry.label), ["Bravo", "Charlie"], JSON.stringify(composerCancelChatRace));
+
+await resetChatRace("#chat-alpha");
+await tapWithoutDelay({ key: "j", code: "KeyJ", virtualKeyCode: 74, text: "j" });
+await waitFor('globalThis.__whatsvimFixtureRace.starts.length === 1', 200);
+await evaluate(`(() => {
+  const fixture = document.querySelector("#whatsvim-test-fixture");
+  const row = document.querySelector("#chat-delta");
+  for (const selected of fixture.querySelectorAll('[aria-selected="true"]')) selected.removeAttribute("aria-selected");
+  row.setAttribute("aria-selected", "true");
+  fixture.querySelector("#test-chat-title").textContent = "Delta";
+  row.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, composed: true }));
+})()`);
+await releaseChatRace();
+await delay(150);
+await evaluate('globalThis.__whatsvimFixtureRace.delayed = false');
+await tapWithoutDelay({ key: "j", code: "KeyJ", virtualKeyCode: 74, text: "j" });
+await waitFor('globalThis.__whatsvimFixtureRace.starts.length === 2', 400);
+const newerPointerChatRace = await evaluate('globalThis.__whatsvimFixtureRace');
+assert.deepEqual(newerPointerChatRace.starts.map((entry) => entry.label), ["Bravo", "Echo"], JSON.stringify(newerPointerChatRace));
+
+await resetChatRace("#chat-charlie");
+await tapWithoutDelay({ key: "G", code: "KeyG", virtualKeyCode: 71, modifiers: 8, text: "G" });
+await waitFor('globalThis.__whatsvimFixtureRace.starts.length === 1', 200);
+await tapWithoutDelay({ key: "k", code: "KeyK", virtualKeyCode: 75, text: "k" });
+await evaluate('globalThis.__whatsvimFixtureRace.fail = true');
+await releaseChatRace();
+await delay(700);
+const failedBoundaryChatRace = await evaluate('globalThis.__whatsvimFixtureRace');
+assert.deepEqual(failedBoundaryChatRace.starts.map((entry) => entry.label), ["Foxtrot"], JSON.stringify(failedBoundaryChatRace));
+assert.equal(failedBoundaryChatRace.fallbacks, 1, JSON.stringify(failedBoundaryChatRace));
+await evaluate('globalThis.__whatsvimFixtureRace.fail = false; globalThis.__whatsvimFixtureRace.delayed = false');
+await tapWithoutDelay({ key: "k", code: "KeyK", virtualKeyCode: 75, text: "k" });
+await waitFor('globalThis.__whatsvimFixtureRace.starts.length === 2', 400);
+assert.equal(await evaluate('globalThis.__whatsvimFixtureRace.starts[1].label'), "Bravo");
+
+await resetChatRace("#chat-charlie");
+await evaluate(`(() => {
+  const pane = document.querySelector("#pane-side");
+  const race = globalThis.__whatsvimFixtureRace;
+  document.querySelector("#whatsvim-toast").textContent = "";
+  race.boundaryRowsRestored = false;
+  race.detachedBoundaryRows = [...pane.querySelectorAll('[role="row"][data-testid^="list-item-"]')];
+  for (const row of race.detachedBoundaryRows) row.remove();
+  setTimeout(() => {
+    for (const row of race.detachedBoundaryRows) pane.append(row);
+    race.boundaryRowsRestored = true;
+  }, 750);
+})()`);
+await tapWithoutDelay({ key: "G", code: "KeyG", virtualKeyCode: 71, modifiers: 8, text: "G" });
+await tapWithoutDelay({ key: "k", code: "KeyK", virtualKeyCode: 75, text: "k" });
+await waitFor('globalThis.__whatsvimFixtureRace.boundaryRowsRestored === true', 1000);
+assert.equal(await evaluate('document.querySelector("#whatsvim-toast")?.textContent'), "No visible chats found");
+const emptyBoundaryChatRace = await evaluate('globalThis.__whatsvimFixtureRace');
+assert.deepEqual(emptyBoundaryChatRace.starts, [], JSON.stringify(emptyBoundaryChatRace));
+assert.equal(emptyBoundaryChatRace.fallbacks, 0, JSON.stringify(emptyBoundaryChatRace));
+await evaluate('globalThis.__whatsvimFixtureRace.delayed = false');
+await tapWithoutDelay({ key: "k", code: "KeyK", virtualKeyCode: 75, text: "k" });
+await waitFor('globalThis.__whatsvimFixtureRace.starts.length === 1', 400);
+assert.equal(await evaluate('globalThis.__whatsvimFixtureRace.starts[0].label'), "Bravo");
+
+await resetChatRace("#chat-alpha");
+await evaluate('globalThis.__whatsvimFixtureRace.holdFirst = false; globalThis.__whatsvimFixtureRace.fail = true');
+for (let index = 0; index < 3; index += 1) {
+  await tapWithoutDelay({ key: "j", code: "KeyJ", virtualKeyCode: 74, text: "j" });
+}
+await delay(700);
+const failedChatRace = await evaluate('globalThis.__whatsvimFixtureRace');
+assert.deepEqual(failedChatRace.starts.map((entry) => entry.label), ["Bravo"], JSON.stringify(failedChatRace));
+assert.equal(failedChatRace.fallbacks, 1, JSON.stringify(failedChatRace));
+await evaluate('globalThis.__whatsvimFixtureRace.fail = false; globalThis.__whatsvimFixtureRace.delayed = false');
+await tapWithoutDelay({ key: "j", code: "KeyJ", virtualKeyCode: 74, text: "j" });
+await waitFor('globalThis.__whatsvimFixtureRace.starts.length === 2', 300);
+assert.equal(await evaluate('document.querySelector("#test-chat-title")?.textContent'), "Bravo");
+
+await resetChatRace("#chat-alpha");
+await evaluate('globalThis.__whatsvimFixtureRace.delayed = false');
+await evaluate('document.querySelector("#test-composer").textContent = ""');
+await delay(50);
+
+await evaluate('document.querySelector("#test-composer").textContent = "normal Enter draft"; document.querySelector("#whatsvim-test-fixture").dataset.nativeSendCount = "0"');
+await pressWithRepeatKeyDowns({
+  key: "Enter",
+  code: "Enter",
+  virtualKeyCode: 13,
+  repeatCount: 3,
+});
+assert.equal(await evaluate('document.querySelector("#whatsvim-test-fixture").dataset.nativeSendCount'), "0");
+assert.equal(await evaluate('document.querySelector("#test-composer").textContent'), "normal Enter draft");
+assert.equal(await evaluate('document.querySelector("#whatsvim-mode")?.dataset.mode'), "insert");
+await evaluate('document.querySelector("#test-composer").focus()');
+assert.equal(await evaluate('document.activeElement?.id'), "test-composer");
+await press({ key: "Enter", code: "Enter", virtualKeyCode: 13, text: "\r" });
+assert.equal(await evaluate('document.querySelector("#whatsvim-test-fixture").dataset.nativeSendCount'), "1");
+await press({ key: "Escape", code: "Escape", virtualKeyCode: 27 });
+await evaluate('document.querySelector("#test-composer").textContent = ""');
+
+await resetChatRace("#chat-alpha");
+await evaluate('document.querySelector("#test-composer").textContent = ""');
+await tapWithoutDelay({ key: "j", code: "KeyJ", virtualKeyCode: 74, text: "j" });
+await waitFor('globalThis.__whatsvimFixtureRace.starts.length === 1', 200);
+await tapWithoutDelay({ key: "l", code: "KeyL", virtualKeyCode: 76, text: "l" });
+await tapWithoutDelay({ key: "i", code: "KeyI", virtualKeyCode: 73, text: "i" });
+await releaseChatRace();
+await delay(250);
+assert.equal(await evaluate('document.querySelector("#whatsvim-mode")?.dataset.mode'), "insert");
+assert.equal(await evaluate('document.activeElement?.id'), "test-composer");
+await press({ key: "Escape", code: "Escape", virtualKeyCode: 27 });
+await resetChatRace("#chat-alpha");
+await evaluate('globalThis.__whatsvimFixtureRace.delayed = false; document.querySelector("#test-composer").textContent = ""');
+
+await tapWithoutDelay({ key: "j", code: "KeyJ", virtualKeyCode: 74, text: "j" });
+await waitFor('globalThis.__whatsvimFixtureRace.starts.length === 1', 300);
+const noAutorepeatChatRace = await evaluate('globalThis.__whatsvimFixtureRace');
+assert.deepEqual(noAutorepeatChatRace.starts.map((entry) => entry.label), ["Bravo"], JSON.stringify(noAutorepeatChatRace));
+
+await resetChatRace("#chat-alpha");
+await evaluate('globalThis.__whatsvimFixtureRace.delayed = false; document.querySelector("#test-composer").textContent = ""');
+
 await pressWithRepeatKeyDowns({
   key: "j",
   code: "KeyJ",
   virtualKeyCode: 74,
   text: "j",
 });
+const autorepeatChatRace = await evaluate('globalThis.__whatsvimFixtureRace');
+assert.deepEqual(autorepeatChatRace.starts.map((entry) => entry.label), ["Bravo", "Charlie"], JSON.stringify(autorepeatChatRace));
 assert.equal(await evaluate('document.querySelector("#chat-bravo")?.dataset.clicked'), "true");
 assert.equal(await evaluate('document.querySelector("#chat-charlie")?.dataset.clicked'), "true");
 assert.equal(await evaluate('document.activeElement?.id'), "whatsvim-sentinel");
@@ -685,6 +1034,7 @@ try {
   })()`);
 }
 
+await evaluate('document.querySelector("#test-composer").textContent = "Ctrl+V draft remains local"');
 await call("Input.dispatchKeyEvent", {
   type: "keyDown",
   key: "v",
@@ -702,6 +1052,7 @@ await call("Input.dispatchKeyEvent", {
   nativeVirtualKeyCode: 86,
   modifiers: 2,
 });
+assert.equal(await evaluate('document.querySelector("#test-composer").textContent'), "Ctrl+V draft remains local");
 
 await press({ key: "Escape", code: "Escape", virtualKeyCode: 27 });
 await press({ key: "/", code: "Slash", virtualKeyCode: 191, text: "/" });
@@ -827,7 +1178,41 @@ assert.equal(await evaluate('document.querySelector("#message-media")?.classList
 await press({ key: "k", code: "KeyK", virtualKeyCode: 75, text: "k" });
 assert.equal(await evaluate('document.querySelector("#message-two")?.classList.contains("whatsvim-selected-message")'), true);
 
+await evaluate('document.querySelector("#test-composer").textContent = "message Enter draft"; document.querySelector("#whatsvim-test-fixture").dataset.nativeSendCount = "0"');
+await pressWithRepeatKeyDowns({
+  key: "Enter",
+  code: "Enter",
+  virtualKeyCode: 13,
+  repeatCount: 3,
+});
+assert.equal(await evaluate('document.querySelector("#whatsvim-test-fixture").dataset.nativeSendCount'), "0");
+assert.equal(await evaluate('document.querySelector("#test-composer").textContent'), "message Enter draft");
+assert.equal(await evaluate('document.querySelector("#whatsvim-mode")?.dataset.mode'), "insert");
+await evaluate('document.querySelector("#test-composer").focus()');
+await press({ key: "Enter", code: "Enter", virtualKeyCode: 13, text: "\r" });
+assert.equal(await evaluate('document.querySelector("#whatsvim-test-fixture").dataset.nativeSendCount'), "1");
+await press({ key: "Escape", code: "Escape", virtualKeyCode: 27 });
+await waitFor('document.querySelector("#whatsvim-mode")?.dataset.context === "message"');
+await evaluate('document.querySelector("#test-composer").textContent = ""');
+
 await evaluate('document.querySelector("#whatsvim-test-fixture").dataset.hostEscapeCount = "0"');
+await evaluate('document.querySelector("#whatsvim-test-fixture").dataset.delayedMessageMenu = "true"; document.querySelector("#test-composer").textContent = "delayed menu draft"');
+await tapWithoutDelay({ key: "r", code: "KeyR", virtualKeyCode: 82, text: "r" });
+await tapWithoutDelay({ key: "Escape", code: "Escape", virtualKeyCode: 27 });
+await delay(350);
+assert.equal(await evaluate('getComputedStyle(document.querySelector("#test-reply-preview")).display'), "none");
+assert.equal(await evaluate('document.querySelector(".test-message-menu")'), null);
+assert.equal(await evaluate('document.querySelector("#test-composer").textContent'), "delayed menu draft");
+await press({ key: "l", code: "KeyL", virtualKeyCode: 76, text: "l" });
+await press({ key: "k", code: "KeyK", virtualKeyCode: 75, text: "k" });
+await tapWithoutDelay({ key: "e", code: "KeyE", virtualKeyCode: 69, text: "e" });
+await tapWithoutDelay({ key: "Escape", code: "Escape", virtualKeyCode: 27 });
+await delay(350);
+assert.equal(await evaluate('document.querySelector("[data-testid=edit-message-modal]")'), null);
+assert.equal(await evaluate('document.querySelector("#test-composer").textContent'), "delayed menu draft");
+await evaluate('document.querySelector("#whatsvim-test-fixture").dataset.delayedMessageMenu = "false"');
+await press({ key: "l", code: "KeyL", virtualKeyCode: 76, text: "l" });
+await press({ key: "k", code: "KeyK", virtualKeyCode: 75, text: "k" });
 await press({ key: "r", code: "KeyR", virtualKeyCode: 82, text: "r" });
 await waitFor('document.querySelector("#whatsvim-mode")?.dataset.mode === "insert"');
 assert.equal(await evaluate('getComputedStyle(document.querySelector("#test-reply-preview")).display'), "block");

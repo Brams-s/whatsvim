@@ -6,3 +6,6 @@ npm-debug.log*
 /opencode.json
 /skills-lock.json
 /HANDOFF.md
+/content.js
+/keymap.js
+.slim/deepwork/

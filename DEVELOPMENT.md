@@ -2,22 +2,27 @@
 
 ## Prerequisites
 
-- Node.js 22 or later and npm; use `npm ci` for the checked-in lockfile.
-- Chromium or Chrome for manual and CDP smoke tests.
-- A separate test browser profile/page for the browser smoke test.
+- Node.js `^22.11 || ^24 || >=26` and npm `>=10.9`; use `npm ci` for the checked-in lockfile.
+- Chromium on `PATH` for the disposable browser smoke test.
 
 ## Commands
 
 ```sh
 npm run version:check       # read-only package/manifest/root-lockfile check
-npm test                    # configuration, keymap, policy, version, and ZIP checks
-npm run package             # synchronized deterministic ZIP in dist/
-npm run verify:package      # inspect manifest and generated ZIP contents
-npm run test:browser        # CDP fixture smoke test; browser setup required
+npm run build               # emit root keymap.js and content.js from TypeScript
+npm run typecheck           # strict TypeScript check without emitting files
+npm test                    # builds, then runs configuration, runtime, policy, version, and ZIP checks
+npm run package             # builds and writes a synchronized deterministic ZIP in dist/
+npm run verify:package      # validate ZIP headers, payload CRCs, and working-tree bytes
+npm run test:browser        # launches and removes a dedicated fixture Chromium profile
 ```
 
-`npm run package` refuses a version mismatch. The allowlist is the four runtime
-files and the four manifest-referenced PNG icons only, so tests, docs, scripts,
+`content.ts` and `keymap.ts` are the source of truth. Root `keymap.js` and
+`content.js` are ignored build artifacts because the manifest, unpacked loading,
+and ZIP retain those historical paths. Before loading this directory unpacked,
+run `npm ci && npm run build`. `npm run package` builds first and refuses a
+version mismatch. The allowlist is the manifest, license, three runtime files,
+and the four manifest-referenced PNG icons only, so tests, docs, scripts,
 `node_modules`, and `.git` cannot enter the archive.
 
 ## Version and Changesets workflow
@@ -47,23 +52,13 @@ Chrome Web Store.
 
 ## Browser smoke prerequisites
 
-Load this directory unpacked in a Chromium instance started with remote
-debugging and a dedicated profile, for example from the project root:
-
-```sh
-chromium --remote-debugging-port=9222 --user-data-dir=/tmp/whatsvim-cdp --load-extension="$PWD"
-```
-
-Open `https://web.whatsapp.com/` in that instance, then run:
-
-```sh
-CDP_ENDPOINT=http://127.0.0.1:9222 npm run test:browser
-```
-
-The smoke script expects the extension sentinel, temporarily stops page
-loading, removes `#app`, and injects a test fixture. Run it only in a dedicated
-test tab/window, never in a working WhatsApp session. It requires a Node
-runtime that provides `fetch` and `WebSocket` globals (Node 22+).
+`npm run test:browser` creates a temporary Chromium profile, starts a dedicated
+debugging endpoint, opens a token-designated WhatsApp fixture target, and removes
+only that owned browser/profile after the test. The harness refuses an
+undesignated target, a non-WhatsApp origin, or a manually supplied default CDP
+endpoint before it reloads or mutates anything. It stops fixture loading,
+removes `#app`, and injects test DOM only in that disposable target. It requires
+a runtime in the supported Node range above that provides `fetch` and `WebSocket` globals.
 
 ## Optional local agent tooling
 
@@ -78,8 +73,8 @@ not auto-connect to an existing Chrome: `--autoConnect` is intentionally absent
 because current Chrome does not support it with extension tools. Use a dedicated
 test browser/profile and approve any Chrome DevTools permission prompts only
 after confirming the target tab/profile; do not grant access to a working
-WhatsApp session. The existing `npm run test:browser` CDP fixture test remains
-separate and still requires the explicit port-9222 setup above.
+WhatsApp session. The existing `npm run test:browser` fixture test remains
+separate and creates its own dedicated debugging endpoint.
 
 After locally configuring optional tools, restart OpenCode so it discovers the
 skills and MCP server; do not restart it as part of an automated test.
@@ -89,8 +84,9 @@ skills and MCP server; do not restart it as part of an automated test.
 After loading unpacked, validate on real WhatsApp Web: chat switching, message
 selection, composing and escape return, reply/edit availability, reactions
 including full picker search, media navigation/close, search popup, help, and
-keyboard behavior in normal editable fields. Test a short and a long/virtualized
-chat, and both narrow and wide browser widths.
+keyboard behavior in normal editable fields. Verify `Space` on a real collapsed
+Read more message. Test a short and a long/virtualized chat, and both narrow and
+wide browser widths.
 
 ## Store-release preflight
 

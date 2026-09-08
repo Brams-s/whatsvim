@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title description">
+  <title id="title">WhatsVim navigation mark</title>
+  <description id="description">An original plum keyboard tile with a bright V command mark and amber cursor.</description>
+  <!-- Original WhatsVim artwork. This is not derived from any third-party mark. -->
+  <defs>
+    <linearGradient id="tile" x1="16" y1="16" x2="112" y2="112" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#292342"/>
+      <stop offset="1" stop-color="#141222"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="20" y1="18" x2="108" y2="110" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#9A7BCE"/>
+      <stop offset="1" stop-color="#51406F"/>
+    </linearGradient>
+  </defs>
+  <!-- The 16-unit clear area around this 96-unit tile becomes 16px transparent padding at 128px. -->
+  <rect x="16" y="16" width="96" height="96" rx="24" fill="url(#tile)"/>
+  <rect x="17.5" y="17.5" width="93" height="93" rx="22.5" fill="none" stroke="url(#edge)" stroke-width="3"/>
+  <rect x="31" y="36" width="66" height="59" rx="13" fill="#100E1E" stroke="#5E4A82" stroke-width="3"/>
+  <path d="M42 49l6 5-6 5M54 59h9" fill="none" stroke="#F2B44C" stroke-width="4" stroke-linecap="square" stroke-linejoin="miter"/>
+  <path d="M43 65l18 21 18-21" fill="none" stroke="#FAF6E9" stroke-width="10" stroke-linecap="square" stroke-linejoin="miter"/>
+  <path d="M83 78v13" fill="none" stroke="#FF6B64" stroke-width="5" stroke-linecap="square"/>
+  <circle cx="96" cy="30" r="3.5" fill="#F2B44C"/>
+</svg>

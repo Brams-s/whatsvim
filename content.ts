@@ -6,6 +6,7 @@
 
   const keymap = globalThis.WhatsVimKeymap;
   if (!keymap) return;
+  const resolveKey = keymap.resolve;
 
   const extensionManifest = globalThis.chrome?.runtime?.getManifest?.();
   const buildVersion = extensionManifest?.version_name || extensionManifest?.version || "";
@@ -42,38 +43,48 @@
     }),
   });
 
-  const helpGroups = Object.freeze([
+  type HelpGroup = readonly [string, readonly (readonly [string, string])[]];
+  type SelectionOptions = { mode?: boolean; scroll?: boolean };
+  type FocusOptions = { focus?: boolean };
+  type PaneOptions = { announce?: boolean };
+  type MediaOptions = { intent?: number; selectMessagePaneWhenUnavailable?: boolean };
+  type ComposerOptions = { announce?: boolean; intent?: number; retrying?: boolean };
+  type WaitOptions = { poll?: boolean; root?: Node | null; timeout?: number };
+  type Shortcut = { altKey?: boolean; code: string; ctrlKey?: boolean; key: string; shiftKey?: boolean };
+  type MouseInit = MouseEventInit & { clientX: number; clientY: number; view: Window };
+
+  const helpGroups: readonly HelpGroup[] = Object.freeze([
     ["Panes", [["h / l", "select chat list / message pane"], ["j / k", "move in the selected pane"], ["Shift+J / Shift+K", "move between chats"], ["gg / G", "first / last chat"]]],
     ["Messages", [["Enter / i / a", "focus the composer"], ["r", "reply to selected message"], ["Shift+R / e", "react / edit"], ["l / o", "open selected media (l otherwise selects the message pane)"], ["Space", "expand Read more on the selected message"], ["I", "compose at the newest message"]]],
     ["Overlays & search", [["h / j / k / l", "move in reaction or media overlays"], ["/", "focus WhatsApp search"], ["Esc / Ctrl+[", "close, clear selection, or leave Insert mode"], ["?", "toggle this reference"]]],
   ]);
 
-  let mode = "normal";
-  let activePane = "chat";
+  let mode: WhatsVimMode = "normal";
+  let activePane: WhatsVimPane = "chat";
   let pendingG = false;
   let pendingGTimer = 0;
   let toastTimer = 0;
   let helpOpen = false;
-  let helpReturnMode = "normal";
-  let helpReturnFocus = null;
+  let helpReturnMode: WhatsVimMode = "normal";
+  let helpReturnFocus: HTMLElement | null = null;
   let helpListenersInstalled = false;
-  let sentinel = null;
-  let modeBadge = null;
-  let toast = null;
-  let help = null;
-  let activeChatRow = null;
-  let activeMessageRow = null;
+  let sentinel!: HTMLDivElement;
+  let modeBadge!: HTMLDivElement;
+  let toast!: HTMLDivElement;
+  let help!: HTMLDialogElement;
+  let activeChatRow: HTMLElement | null = null;
+  let activeMessageRow: HTMLElement | null = null;
   let activeMessageKey = "";
-  let activeReactionChoice = null;
-  let messageModeReturnRow = null;
+  let activeReactionChoice: HTMLElement | null = null;
+  let messageModeReturnRow: HTMLElement | null = null;
   let messageModeReturnKey = "";
   let messageReturnRestoreSerial = 0;
   let pendingMessageReturnRestore = 0;
-  let mediaReturnRow = null;
+  let mediaReturnRow: HTMLElement | null = null;
   let mediaReturnKey = "";
-  let mediaReturnScroller = null;
-  let mediaReturnScrollTop = null;
-  let mediaReturnScrollLeft = null;
+  let mediaReturnScroller: HTMLElement | null = null;
+  let mediaReturnScrollTop: number | null = null;
+  let mediaReturnScrollLeft: number | null = null;
   let mediaRestoreSerial = 0;
   let messageOverlayKind = "";
   let messageOverlayCloseSerial = 0;
@@ -81,10 +92,17 @@
   let reactionSearchFocusUntil = 0;
   let normalModeLockUntil = 0;
   let messageModeLockUntil = 0;
-  let pendingChatActivation = null;
+  let pendingChatActivation: Promise<boolean> | null = null;
+  let chatNavigationGeneration = 0;
+  let commandIntentGeneration = 0;
+  let ownedCompositionEnter = false;
   const heldPaneNavigationKeys = new Set();
 
-  function createElement(tagName, attributes = {}, text = "") {
+  function createElement<K extends keyof HTMLElementTagNameMap>(
+    tagName: K,
+    attributes: Record<string, string> = {},
+    text = ""
+  ): HTMLElementTagNameMap[K] {
     const element = document.createElement(tagName);
     for (const [name, value] of Object.entries(attributes)) {
       if (name === "className") element.className = value;
@@ -97,8 +115,10 @@
   function mountUi() {
     if (!document.body) return false;
 
-    sentinel = document.getElementById(ids.sentinel);
-    if (!sentinel) {
+    const existingSentinel = document.getElementById(ids.sentinel);
+    if (existingSentinel instanceof HTMLDivElement) {
+      sentinel = existingSentinel;
+    } else {
       // This is a programmatic command target, not an editor. The visible live
       // mode status communicates the current command state to assistive technology.
       sentinel = createElement("div", {
@@ -108,8 +128,10 @@
       document.body.append(sentinel);
     }
 
-    modeBadge = document.getElementById(ids.mode);
-    if (!modeBadge) {
+    const existingModeBadge = document.getElementById(ids.mode);
+    if (existingModeBadge instanceof HTMLDivElement) {
+      modeBadge = existingModeBadge;
+    } else {
       modeBadge = createElement("div", {
         id: ids.mode,
         role: "status",
@@ -118,8 +140,10 @@
       document.body.append(modeBadge);
     }
 
-    toast = document.getElementById(ids.toast);
-    if (!toast) {
+    const existingToast = document.getElementById(ids.toast);
+    if (existingToast instanceof HTMLDivElement) {
+      toast = existingToast;
+    } else {
       toast = createElement("div", {
         id: ids.toast,
         role: "status",
@@ -128,8 +152,10 @@
       document.body.append(toast);
     }
 
-    help = document.getElementById(ids.help);
-    if (!help) {
+    const existingHelp = document.getElementById(ids.help);
+    if (existingHelp instanceof HTMLDialogElement) {
+      help = existingHelp;
+    } else {
       help = createElement("dialog", {
         id: ids.help,
         "aria-labelledby": "whatsvim-help-title",
@@ -200,17 +226,17 @@
     modeBadge.textContent = `${publicMode.toUpperCase()} · ${activePane === "chat" ? "CHATS" : "MESSAGES"}`;
   }
 
-  function isEditable(target) {
+  function isEditable(target: EventTarget | null): boolean {
     if (!(target instanceof Element) || target === sentinel) return false;
     if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) {
       return !target.disabled;
     }
-    if (target.isContentEditable) return true;
+    if (target instanceof HTMLElement && target.isContentEditable) return true;
     const editor = target.closest('[contenteditable]:not([contenteditable="false"]), [role="textbox"]');
     return editor instanceof HTMLElement;
   }
 
-  function isVisible(element) {
+  function isVisible(element: Element | null | undefined): boolean {
     if (!(element instanceof Element)) return false;
     const style = getComputedStyle(element);
     if (style.display === "none" || style.visibility === "hidden") return false;
@@ -227,7 +253,7 @@
     }
   }
 
-  function setMode(nextMode, options = {}) {
+  function setMode(nextMode: WhatsVimMode, options: FocusOptions = {}) {
     mode = ["insert", "message"].includes(nextMode) ? nextMode : "normal";
     updateModeBadge();
     syncComposerInsertIndicator();
@@ -241,7 +267,7 @@
       element.classList.remove("whatsvim-insert-composer");
     });
     const editor = composer();
-    if (mode === "insert" && editor === document.activeElement) {
+    if (mode === "insert" && editor && editor === document.activeElement) {
       editor.classList.add("whatsvim-insert-composer");
     }
   }
@@ -279,7 +305,7 @@
     return null;
   }
 
-  function flash(message) {
+  function flash(message: string) {
     if (!mountUi()) return;
     clearTimeout(toastTimer);
     toast.textContent = message;
@@ -289,9 +315,10 @@
     }, 1500);
   }
 
-  function setHelpOpen(open) {
+  function setHelpOpen(open: boolean) {
+    if (open) cancelChatNavigation();
     if (!mountUi()) return;
-    const close = help.querySelector(`#${ids.helpClose}`);
+    const close = help.querySelector<HTMLButtonElement>(`#${ids.helpClose}`);
     const dialogOpen = help.open === true;
     if (open) {
       if (!helpOpen) {
@@ -340,7 +367,7 @@
     }
   }
 
-  function onHelpKeyDown(event) {
+  function onHelpKeyDown(event: KeyboardEvent) {
     if (!helpOpen) return;
     if (event.key === "Escape") {
       consume(event);
@@ -356,7 +383,7 @@
       // The help currently has one control. Keeping Tab here makes this a
       // modal rather than allowing focus to escape into WhatsApp.
       consume(event);
-      help.querySelector(`#${ids.helpClose}`)?.focus({ preventScroll: true });
+      help.querySelector<HTMLButtonElement>(`#${ids.helpClose}`)?.focus({ preventScroll: true });
       return;
     }
     // The modal owns keyboard interaction while it is open; do not let
@@ -364,13 +391,13 @@
     consume(event);
   }
 
-  function consume(event) {
+  function consume(event: Event) {
     event.preventDefault();
     event.stopPropagation();
     event.stopImmediatePropagation();
   }
 
-  function dispatchWhatsAppShortcut({ key, code, ctrlKey = false, altKey = false, shiftKey = false }) {
+  function dispatchWhatsAppShortcut({ key, code, ctrlKey = false, altKey = false, shiftKey = false }: Shortcut) {
     const target = document.activeElement instanceof Element ? document.activeElement : document.body;
     if (!target) return false;
     const init = {
@@ -388,11 +415,11 @@
     return true;
   }
 
-  function normalizedText(value) {
+  function normalizedText(value: string | null | undefined) {
     return (value || "").replace(/\s+/g, " ").trim().toLocaleLowerCase();
   }
 
-  function uniqueOutermost(elements, root, marker) {
+  function uniqueOutermost<T extends Element>(elements: T[], root: Element, marker: (element: T) => boolean): T[] {
     const unique = [...new Set(elements)].filter((element) => (
       element instanceof Element && root.contains(element) && isVisible(element)
     ));
@@ -401,13 +428,13 @@
     )));
   }
 
-  function chatRows() {
+  function chatRows(): HTMLElement[] {
     const pane = document.querySelector(whatsappSelectors.chat.root);
     if (!pane) return [];
 
     const preferred = uniqueOutermost(
       [...pane.querySelectorAll(whatsappSelectors.chat.primary)]
-        .filter((row) => row.querySelector(whatsappSelectors.chat.cell)),
+        .filter((row): row is HTMLElement => row instanceof HTMLElement && Boolean(row.querySelector(whatsappSelectors.chat.cell))),
       pane,
       (row) => row.matches(whatsappSelectors.chat.primary)
     );
@@ -415,17 +442,17 @@
 
     const legacy = [...pane.querySelectorAll(whatsappSelectors.chat.legacyCell)]
       .map((cell) => cell.closest(whatsappSelectors.chat.legacyRow) || cell)
-      .filter((candidate) => candidate.querySelector?.(whatsappSelectors.chat.cell) || candidate.matches?.(whatsappSelectors.chat.legacyCell));
+      .filter((candidate): candidate is HTMLElement => candidate instanceof HTMLElement && (Boolean(candidate.querySelector(whatsappSelectors.chat.cell)) || candidate.matches(whatsappSelectors.chat.legacyCell)));
     return uniqueOutermost(legacy, pane, (candidate) => (
       candidate.matches(whatsappSelectors.chat.legacyRow) || candidate.matches(whatsappSelectors.chat.legacyCell)
     ));
   }
 
-  function paneRoot(pane) {
+  function paneRoot(pane: WhatsVimPane): HTMLElement | null {
     return document.querySelector(pane === "chat" ? "#side" : whatsappSelectors.message.root);
   }
 
-  function suppressDuplicatePaneNavigation(event, action) {
+  function suppressDuplicatePaneNavigation(event: KeyboardEvent, action: WhatsVimAction) {
     if (![
       "next-chat",
       "previous-chat",
@@ -440,10 +467,11 @@
     return false;
   }
 
-  function setActivePane(nextPane, { announce = true } = {}) {
+  function setActivePane(nextPane: WhatsVimPane, { announce = true }: PaneOptions = {}) {
     const pane = nextPane === "chat" ? "chat" : "message";
+    if (pane === "message" && activePane === "chat") cancelChatNavigation();
     const root = paneRoot(pane);
-    if (!isVisible(root)) {
+    if (!(root instanceof HTMLElement) || !isVisible(root)) {
       if (announce) flash(pane === "chat" ? "Chat list is not available" : "Message pane is not available");
       return false;
     }
@@ -454,7 +482,7 @@
     return true;
   }
 
-  function selectChatRow(row) {
+  function selectChatRow(row: HTMLElement) {
     document.querySelectorAll(`.${selectedChatClass}`).forEach((selected) => {
       if (selected !== row) selected.classList.remove(selectedChatClass);
     });
@@ -466,7 +494,7 @@
     document.querySelectorAll(`.${selectedChatClass}`).forEach((row) => row.classList.remove(selectedChatClass));
   }
 
-  function chatRow(element) {
+  function chatRow(element: EventTarget | null): HTMLElement | null {
     if (!(element instanceof Element)) return null;
     const pane = document.querySelector(whatsappSelectors.chat.root);
     if (!pane?.contains(element)) return null;
@@ -487,7 +515,7 @@
     return normalizedText(titled?.getAttribute("title") || titled?.textContent || header.textContent);
   }
 
-  function rowLabels(row) {
+  function rowLabels(row: HTMLElement): string[] {
     const primary = normalizedText(
       row.querySelector(whatsappSelectors.chat.title)?.textContent
     );
@@ -497,8 +525,8 @@
     return [...new Set([primary, ...titled].filter(Boolean))];
   }
 
-  function currentChatIndex(rows) {
-    const trackedIndex = rows.indexOf(activeChatRow);
+  function currentChatIndex(rows: HTMLElement[]): number {
+    const trackedIndex = activeChatRow ? rows.indexOf(activeChatRow) : -1;
     if (trackedIndex >= 0) return trackedIndex;
 
     const selectedIndex = rows.findIndex((row) => {
@@ -517,7 +545,7 @@
     return matches.length === 1 ? rows.indexOf(matches[0]) : -1;
   }
 
-  function chatActivationObserved(row) {
+  function chatActivationObserved(row: HTMLElement): boolean {
     if (!(row instanceof HTMLElement) || !row.isConnected) return false;
     if (row.matches('[aria-selected="true"], [aria-current="true"], [data-selected="true"]')) return true;
     if (row.querySelector('[aria-selected="true"], [aria-current="true"], [data-selected="true"]')) return true;
@@ -525,8 +553,56 @@
     return Boolean(label && rowLabels(row).includes(label));
   }
 
-  async function activateChat(row) {
+  function cancelChatNavigation(): number {
+    if (pendingChatActivation) activeChatRow = null;
+    chatNavigationGeneration += 1;
+    return chatNavigationGeneration;
+  }
+
+  function beginCommandIntent(): number {
+    commandIntentGeneration += 1;
+    return commandIntentGeneration;
+  }
+
+  function commandIntentIsCurrent(intent: number): boolean {
+    return intent === commandIntentGeneration;
+  }
+
+  function chatNavigationIsCurrent(generation: number): boolean {
+    return generation === chatNavigationGeneration;
+  }
+
+  function queueChatOperation(operation: () => Promise<boolean>): Promise<boolean> {
+    const previous = pendingChatActivation;
+    let task!: Promise<boolean>;
+    task = (async () => {
+      try {
+        // Publishing this task happens before this first microtask. Each tap
+        // therefore waits for its immediate predecessor, then rechecks state
+        // and publishes its own activation without a fan-out window.
+        if (previous) {
+          try {
+            await previous;
+          } catch {
+            // A failed predecessor does not poison a later explicit command.
+          }
+        } else {
+          await Promise.resolve();
+        }
+        return await operation();
+      } catch {
+        return false;
+      } finally {
+        if (pendingChatActivation === task) pendingChatActivation = null;
+      }
+    })();
+    pendingChatActivation = task;
+    return task;
+  }
+
+  async function activateChat(row: HTMLElement, generation: number): Promise<boolean> {
     if (!(row instanceof HTMLElement)) return false;
+    if (!chatNavigationIsCurrent(generation)) return false;
 
     const target = row.querySelector('[data-testid="cell-frame-container"]') || row;
     if (!(target instanceof HTMLElement)) return false;
@@ -550,6 +626,7 @@
     // Synthetic events are always untrusted. Do not equate dispatch success
     // with a WhatsApp action: require an observable selection/header change.
     if (await waitForPredicate(() => chatActivationObserved(row), { root: document.querySelector(whatsappSelectors.chat.root), timeout: 280 })) {
+      if (!chatNavigationIsCurrent(generation)) return false;
       activeChatRow = row;
       selectChatRow(row);
       setActivePane("chat", { announce: false });
@@ -559,9 +636,11 @@
     // Some controls activate on click rather than mousedown. Do not send a
     // second mousedown; this bounded mouseup/click fallback avoids duplicate
     // activation when the primary event was merely slow to render.
+    if (!chatNavigationIsCurrent(generation)) return false;
     const fallbackInit = mouseEventInit(target);
     for (const type of ["mouseup", "click"]) target.dispatchEvent(new MouseEvent(type, fallbackInit));
     if (await waitForPredicate(() => chatActivationObserved(row), { root: document.querySelector(whatsappSelectors.chat.root), timeout: 280 })) {
+      if (!chatNavigationIsCurrent(generation)) return false;
       activeChatRow = row;
       selectChatRow(row);
       setActivePane("chat", { announce: false });
@@ -570,43 +649,73 @@
     return false;
   }
 
-  async function navigateChat(direction) {
-    if (pendingChatActivation) await pendingChatActivation;
-    const rows = chatRows();
-    const current = currentChatIndex(rows);
-    const target = current >= 0
-      ? rows[current + direction]
-      : direction > 0
-        ? rows[0]
-        : rows.at(-1);
-    if (target) {
-      const activation = activateChat(target);
-      pendingChatActivation = activation;
-      const activated = await activation;
-      if (pendingChatActivation === activation) pendingChatActivation = null;
-      if (activated) return true;
-    }
-
-    flash(rows.length > 0 ? "End of chat list" : "Chat list is not available");
-    return false;
-  }
-
-  async function selectBoundaryChat(edge) {
-    const pane = document.querySelector(whatsappSelectors.chat.root);
-    if (!(pane instanceof HTMLElement)) {
-      flash("Chat list is not available");
-      return;
-    }
-
-    pane.scrollTo({ top: edge === "first" ? 0 : pane.scrollHeight, behavior: "auto" });
-    const target = await waitForPredicate(() => {
+  async function navigateChat(direction: number): Promise<boolean> {
+    const generation = chatNavigationGeneration;
+    return queueChatOperation(async () => {
+      if (!chatNavigationIsCurrent(generation)) return false;
       const rows = chatRows();
-      return edge === "first" ? rows[0] : rows.at(-1);
-    }, { root: pane, timeout: 700, poll: true });
-    if (!target || !await activateChat(target)) flash("No visible chats found");
+      const current = currentChatIndex(rows);
+      const target = current >= 0
+        ? rows[current + direction]
+        : direction > 0
+          ? rows[0]
+          : rows.at(-1);
+      if (target) {
+        try {
+          const activated = await activateChat(target, generation);
+          if (!chatNavigationIsCurrent(generation)) return false;
+          if (activated) return true;
+          cancelChatNavigation();
+        } catch {
+          if (chatNavigationIsCurrent(generation)) cancelChatNavigation();
+        }
+      }
+      if (chatNavigationIsCurrent(generation)) {
+        flash(rows.length > 0 ? "End of chat list" : "Chat list is not available");
+      }
+      return false;
+    });
   }
 
-  function messageRow(element) {
+  async function selectBoundaryChat(edge: "first" | "last"): Promise<void> {
+    const generation = cancelChatNavigation();
+    await queueChatOperation(async () => {
+      if (!chatNavigationIsCurrent(generation)) return false;
+      try {
+        const pane = document.querySelector(whatsappSelectors.chat.root);
+        if (!(pane instanceof HTMLElement)) {
+          flash("Chat list is not available");
+          cancelChatNavigation();
+          return false;
+        }
+        pane.scrollTo({ top: edge === "first" ? 0 : pane.scrollHeight, behavior: "auto" });
+        const target = await waitForPredicate(() => {
+          const rows = chatRows();
+          return edge === "first" ? rows[0] : rows.at(-1);
+        }, { root: pane, timeout: 700, poll: true });
+        if (!chatNavigationIsCurrent(generation)) return false;
+        if (!target) {
+          flash("No visible chats found");
+          cancelChatNavigation();
+          return false;
+        }
+        const activated = await activateChat(target, generation);
+        if (!activated && chatNavigationIsCurrent(generation)) {
+          flash("No visible chats found");
+          cancelChatNavigation();
+        }
+        return activated;
+      } catch {
+        if (chatNavigationIsCurrent(generation)) {
+          flash("No visible chats found");
+          cancelChatNavigation();
+        }
+        return false;
+      }
+    });
+  }
+
+  function messageRow(element: EventTarget | null): HTMLElement | null {
     if (!(element instanceof Element)) return null;
     const main = document.querySelector(whatsappSelectors.message.root);
     if (!main?.contains(element)) return null;
@@ -616,23 +725,23 @@
       : null;
   }
 
-  function messageRows() {
+  function messageRows(): HTMLElement[] {
     const main = document.querySelector(whatsappSelectors.message.root);
     if (!main) return [];
     return uniqueOutermost(
       [...main.querySelectorAll(whatsappSelectors.message.row)]
-        .filter((row) => row.querySelector(whatsappSelectors.message.container)),
+        .filter((row): row is HTMLElement => row instanceof HTMLElement && Boolean(row.querySelector(whatsappSelectors.message.container))),
       main,
-      (row) => row.matches(whatsappSelectors.message.row) && row.querySelector(whatsappSelectors.message.container)
+      (row) => row.matches(whatsappSelectors.message.row) && Boolean(row.querySelector(whatsappSelectors.message.container))
     );
   }
 
-  function messageContainer(row) {
+  function messageContainer(row: HTMLElement | null | undefined): HTMLElement | null {
     const container = row?.querySelector?.(whatsappSelectors.message.container);
     return container instanceof HTMLElement ? container : null;
   }
 
-  function messageKey(row) {
+  function messageKey(row: Element | null | undefined): string {
     if (!(row instanceof Element)) return "";
     const root = row.querySelector('[data-id], [data-testid^="conv-msg-"]');
     return root?.getAttribute("data-id") || root?.getAttribute("data-testid") || "";
@@ -656,7 +765,7 @@
     messageModeReturnKey = "";
   }
 
-  function captureMessageReturn(row) {
+  function captureMessageReturn(row: HTMLElement | null | undefined) {
     messageReturnRestoreSerial += 1;
     messageModeReturnRow = row instanceof HTMLElement ? row : null;
     messageModeReturnKey = messageKey(row);
@@ -671,7 +780,7 @@
     mediaReturnScrollLeft = null;
   }
 
-  function selectMessage(row, options = {}) {
+  function selectMessage(row: HTMLElement | null | undefined, options: SelectionOptions = {}) {
     if (!(row instanceof HTMLElement) || !messageContainer(row)) return false;
 
     document.querySelectorAll(`.${selectedMessageClass}`).forEach((selected) => {
@@ -724,24 +833,27 @@
     return true;
   }
 
-  async function selectMessagePane() {
+  async function selectMessagePane(intent: number) {
+    cancelChatNavigation();
     const normalContext = mode === "normal";
     const activation = pendingChatActivation;
-    if (activation && !await activation) return false;
+    if (activation) await activation;
+    if (!commandIntentIsCurrent(intent)) return false;
     if (!normalContext) return setActivePane("message");
     const ready = await waitForPredicate(() => {
       const root = paneRoot("message");
       return isVisible(root) && messageRows().length > 0 ? true : null;
     }, { root: document.body, timeout: 700, poll: true });
+    if (!commandIntentIsCurrent(intent)) return false;
     if (!ready || !setActivePane("message", { announce: false }) || !initializeMessageCursor()) {
       flash("Message pane is not available");
       return false;
     }
-    keepNormalFocus();
+    if (commandIntentIsCurrent(intent)) keepNormalFocus();
     return true;
   }
 
-  function messageScroller(row) {
+  function messageScroller(row: HTMLElement | null | undefined): HTMLElement | null {
     let node = row?.parentElement;
     while (node && node.id !== "main") {
       const style = getComputedStyle(node);
@@ -757,17 +869,17 @@
     return null;
   }
 
-  function wait(milliseconds) {
+  function wait(milliseconds: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, milliseconds));
   }
 
-  function waitForPredicate(read, { root = document.body, timeout = 900, poll = false } = {}) {
+  function waitForPredicate<T>(read: () => T | null | false, { root = document.body, timeout = 900, poll = false }: WaitOptions = {}): Promise<T | null> {
     return new Promise((resolve) => {
       let finished = false;
-      let observer = null;
+      let observer: MutationObserver | null = null;
       let timer = 0;
       let pollTimer = 0;
-      const finish = (value) => {
+      const finish = (value: T | null | false) => {
         if (finished) return;
         finished = true;
         observer?.disconnect();
@@ -797,11 +909,11 @@
     });
   }
 
-  async function waitForValue(read, timeout = 900) {
+  async function waitForValue<T>(read: () => T | null | false, timeout = 900): Promise<T | null> {
     return waitForPredicate(read, { timeout, poll: true });
   }
 
-  async function navigateMessage(direction) {
+  async function navigateMessage(direction: number): Promise<void> {
     if (reactionPicker()) await closeReactionPicker();
 
     let rows = messageRows();
@@ -814,7 +926,7 @@
     }
 
     let index = rows.indexOf(current);
-    let target = index >= 0 ? rows[index + direction] : null;
+    let target: HTMLElement | null | undefined = index >= 0 ? rows[index + direction] : null;
     if (target && selectMessage(target)) return;
 
     const key = activeMessageKey;
@@ -843,7 +955,7 @@
     focusSentinel();
   }
 
-  function mouseEventInit(element) {
+  function mouseEventInit(element: Element): MouseInit {
     const rect = element.getBoundingClientRect();
     return {
       bubbles: true,
@@ -856,7 +968,7 @@
     };
   }
 
-  function triggerMouse(element) {
+  function triggerMouse(element: Element | null | undefined): boolean {
     if (!(element instanceof HTMLElement) || !element.isConnected) return false;
     const init = mouseEventInit(element);
     for (const type of ["mousedown", "mouseup", "click"]) {
@@ -865,9 +977,9 @@
     return true;
   }
 
-  async function revealMessageControls(row = selectedMessageRow()) {
+  async function revealMessageControls(row: HTMLElement | null = selectedMessageRow()): Promise<HTMLElement | null> {
     const message = messageContainer(row);
-    if (!message) return null;
+    if (!message || !row) return null;
     row.scrollIntoView({ block: "center", inline: "nearest" });
     const init = mouseEventInit(message);
     for (const type of ["pointerover", "pointerenter", "mouseover", "mouseenter", "mousemove"]) {
@@ -878,7 +990,7 @@
     return message;
   }
 
-  function visibleMenuItem(action) {
+  function visibleMenuItem(action: string): Element | null {
     const expected = normalizedText(action);
     const matches = [...document.querySelectorAll('[role="menu"] [role="menuitem"]')].filter((item) => {
       if (!isVisible(item) || !item.closest('[role="menu"]')) return false;
@@ -890,11 +1002,13 @@
     return matches.length === 1 ? matches[0] : null;
   }
 
-  async function chooseMessageMenuAction(action, unavailableMessage) {
+  async function chooseMessageMenuAction(action: string, unavailableMessage: string, intent: number): Promise<boolean> {
+    if (!commandIntentIsCurrent(intent)) return false;
     normalModeLockUntil = 0;
     messageModeLockUntil = performance.now() + 1100;
     const row = selectedMessageRow();
     const message = await revealMessageControls(row);
+    if (!commandIntentIsCurrent(intent)) return false;
     const menuButton = message?.querySelector('[data-testid="icon-down-context"]');
     if (!(menuButton instanceof HTMLElement) || !triggerMouse(menuButton)) {
       flash("Message actions are not available");
@@ -903,6 +1017,7 @@
     }
 
     const item = await waitForValue(() => visibleMenuItem(action));
+    if (!commandIntentIsCurrent(intent)) return false;
     if (!item) {
       triggerMouse(menuButton);
       flash(unavailableMessage);
@@ -911,6 +1026,7 @@
     }
 
     messageModeLockUntil = 0;
+    if (!commandIntentIsCurrent(intent)) return false;
     triggerMouse(item);
     return true;
   }
@@ -925,37 +1041,40 @@
     return editor instanceof HTMLElement && isVisible(editor) ? editor : null;
   }
 
-  async function replyToSelectedMessage() {
+  async function replyToSelectedMessage(intent: number) {
     const row = selectedMessageRow();
     if (!row) {
       flash("Select a message first");
       return;
     }
     captureMessageReturn(row);
-    if (!await chooseMessageMenuAction("reply", "This message cannot be replied to")) {
-      clearMessageReturn();
+    if (!await chooseMessageMenuAction("reply", "This message cannot be replied to", intent)) {
+      if (commandIntentIsCurrent(intent)) clearMessageReturn();
       return;
     }
     if (!await waitForValue(replyComposerOpen)) {
-      clearMessageReturn();
-      flash("WhatsApp did not open the reply composer");
+      if (commandIntentIsCurrent(intent)) {
+        clearMessageReturn();
+        flash("WhatsApp did not open the reply composer");
+      }
       return;
     }
-    focusComposer();
+    if (commandIntentIsCurrent(intent)) focusComposer({ intent });
   }
 
-  async function editSelectedMessage() {
+  async function editSelectedMessage(intent: number) {
     const row = selectedMessageRow();
     if (!row) {
       flash("Select a message first");
       return;
     }
     captureMessageReturn(row);
-    if (!await chooseMessageMenuAction("edit", "Only recent editable messages can be edited")) {
-      clearMessageReturn();
+    if (!await chooseMessageMenuAction("edit", "Only recent editable messages can be edited", intent)) {
+      if (commandIntentIsCurrent(intent)) clearMessageReturn();
       return;
     }
     const editor = await waitForValue(editMessageComposer);
+    if (!commandIntentIsCurrent(intent)) return;
     if (!editor) {
       clearMessageReturn();
       flash("WhatsApp did not open the message editor");
@@ -976,14 +1095,14 @@
     }) || null;
   }
 
-  function reactionSearchEditor(picker = reactionPicker()) {
+  function reactionSearchEditor(picker: Element | null = reactionPicker()): HTMLElement | null {
     if (!(picker instanceof Element)) return null;
     const editors = [...picker.querySelectorAll([
       'input:not([disabled])',
       'textarea:not([disabled])',
       '[contenteditable="true"][role="textbox"]',
       '[contenteditable="true"][data-tab]',
-    ].join(", "))].filter((editor) => editor instanceof HTMLElement && isVisible(editor));
+    ].join(", "))].filter((editor): editor is HTMLElement => editor instanceof HTMLElement && isVisible(editor));
     const labelled = editors.find((editor) => /search|emoji/i.test([
       editor.getAttribute("aria-label"),
       editor.getAttribute("placeholder"),
@@ -992,13 +1111,13 @@
     return labelled || editors[0] || null;
   }
 
-  function isReactionSearchContext(element) {
+  function isReactionSearchContext(element: EventTarget | null): boolean {
     if (!(element instanceof Element)) return false;
     const editor = reactionSearchEditor();
     return editor instanceof Element && (element === editor || editor.contains(element));
   }
 
-  function reactionChoiceCandidates(scope) {
+  function reactionChoiceCandidates(scope: Element | null): HTMLElement[] {
     if (!(scope instanceof Element)) return [];
     const candidates = [...scope.querySelectorAll([
       "button:not([disabled])",
@@ -1009,7 +1128,7 @@
       "[data-emoji]",
       '[data-testid*="emoji" i]',
       '[tabindex]:not([tabindex="-1"])',
-    ].join(", "))].filter((choice) => (
+    ].join(", "))].filter((choice): choice is HTMLElement => (
       choice instanceof HTMLElement && isVisible(choice) && !isEditable(choice)
     ));
 
@@ -1020,7 +1139,7 @@
     )));
   }
 
-  function reactionChoices(picker = reactionPicker()) {
+  function reactionChoices(picker: Element | null = reactionPicker()): HTMLElement[] {
     if (!(picker instanceof Element)) return [];
     const groups = [...picker.querySelectorAll([
       '[role="grid"]',
@@ -1046,7 +1165,7 @@
     reactionSearchFocusUntil = 0;
   }
 
-  function focusReactionChoice(choice) {
+  function focusReactionChoice(choice: HTMLElement | null | undefined): boolean {
     if (!(choice instanceof HTMLElement) || !choice.isConnected) return false;
     cancelReactionSearchFocus();
     clearReactionFocus();
@@ -1062,7 +1181,7 @@
     return true;
   }
 
-  function focusReactionSearch(picker = reactionPicker()) {
+  function focusReactionSearch(picker: Element | null = reactionPicker()): boolean {
     const editor = reactionSearchEditor(picker);
     if (!(editor instanceof HTMLElement)) {
       flash("The full emoji search is not available");
@@ -1098,16 +1217,16 @@
     return true;
   }
 
-  function focusReactionGrid(picker = reactionPicker()) {
+  function focusReactionGrid(picker: Element | null = reactionPicker()): boolean {
     const choices = reactionChoices(picker);
-    const choice = choices.includes(activeReactionChoice) ? activeReactionChoice : choices[0];
+    const choice = activeReactionChoice && choices.includes(activeReactionChoice) ? activeReactionChoice : choices[0];
     if (focusReactionChoice(choice)) return true;
     flash("No emoji results are available");
     setMode("message", { focus: false });
     return false;
   }
 
-  function reactionChoiceCenter(choice) {
+  function reactionChoiceCenter(choice: HTMLElement) {
     const rect = choice.getBoundingClientRect();
     return {
       x: rect.left + rect.width / 2,
@@ -1115,7 +1234,7 @@
     };
   }
 
-  function moveReactionFocus(direction) {
+  function moveReactionFocus(direction: "left" | "right" | "up" | "down") {
     const picker = reactionPicker();
     const choices = reactionChoices(picker);
     if (!choices.length) {
@@ -1124,9 +1243,10 @@
     }
 
     const focused = document.activeElement;
-    const current = choices.includes(activeReactionChoice)
+    const current = activeReactionChoice && choices.includes(activeReactionChoice)
       ? activeReactionChoice
       : choices.find((choice) => choice === focused || choice.contains(focused)) || choices[0];
+    if (!current) return;
     const origin = reactionChoiceCenter(current);
     const horizontal = direction === "left" || direction === "right";
     const sign = direction === "left" || direction === "up" ? -1 : 1;
@@ -1160,7 +1280,7 @@
     const picker = reactionPicker();
     const choices = reactionChoices(picker);
     const focused = document.activeElement;
-    const choice = choices.includes(activeReactionChoice)
+    const choice = activeReactionChoice && choices.includes(activeReactionChoice)
       ? activeReactionChoice
       : choices.find((candidate) => candidate === focused || candidate.contains(focused)) || choices[0];
     if (!(choice instanceof HTMLElement) || !triggerMouse(choice)) {
@@ -1216,7 +1336,7 @@
     if (closeSerial === messageOverlayCloseSerial) keepMessageFocus();
   }
 
-  async function reactToSelectedMessage() {
+  async function reactToSelectedMessage(intent: number) {
     const row = selectedMessageRow();
     const message = await revealMessageControls(row);
     if (!message) {
@@ -1226,7 +1346,7 @@
 
     const direct = message.querySelector('[data-testid="reaction-entry-point"]');
     if (direct instanceof HTMLElement) triggerMouse(direct);
-    else if (!await chooseMessageMenuAction("react", "This message cannot be reacted to")) return;
+    else if (!await chooseMessageMenuAction("react", "This message cannot be reacted to", intent)) return;
 
     const picker = await waitForValue(reactionPicker);
     if (!picker) {
@@ -1238,7 +1358,7 @@
     if (!focusReactionChoice(firstChoice)) setMode("message", { focus: false });
   }
 
-  function messageMediaTarget(message) {
+  function messageMediaTarget(message: HTMLElement): HTMLElement | null {
     const labelled = [...message.querySelectorAll('button[aria-label], [role="button"][aria-label]')]
       .find((element) => {
         const label = element.getAttribute("aria-label") || "";
@@ -1260,7 +1380,7 @@
     return tested instanceof HTMLElement ? tested : null;
   }
 
-  function messageReadMoreControl(message) {
+  function messageReadMoreControl(message: Element | null): Element | null {
     if (!(message instanceof Element)) return null;
     const candidates = [...message.querySelectorAll([
       '[data-testid*="read-more" i]',
@@ -1282,30 +1402,33 @@
     return control instanceof HTMLElement && triggerMouse(control);
   }
 
-  async function openSelectedMessageMedia(options = {}) {
+  async function openSelectedMessageMedia(options: MediaOptions = {}): Promise<boolean> {
+    if (options.intent !== undefined && !commandIntentIsCurrent(options.intent)) return false;
     const selectMessagePaneWhenUnavailable = options.selectMessagePaneWhenUnavailable === true;
     const row = selectedMessageRow();
     captureMediaReturn(row);
     const message = await revealMessageControls(row);
+    if (options.intent !== undefined && !commandIntentIsCurrent(options.intent)) return false;
     const target = message && messageMediaTarget(message);
     if (!target) {
       finishMediaClose();
-      if (selectMessagePaneWhenUnavailable) return selectMessagePane();
+      if (selectMessagePaneWhenUnavailable && options.intent !== undefined) return selectMessagePane(options.intent);
       flash("The selected message has no openable media");
       return false;
     }
     if (!triggerMouse(target)) {
       finishMediaClose();
-      if (selectMessagePaneWhenUnavailable) return selectMessagePane();
+      if (selectMessagePaneWhenUnavailable && options.intent !== undefined) return selectMessagePane(options.intent);
       flash("The selected message has no openable media");
       return false;
     }
+    if (options.intent !== undefined && !commandIntentIsCurrent(options.intent)) return false;
     messageOverlayKind = "media";
     setMode("message", { focus: false });
     return true;
   }
 
-  function captureMediaReturn(row = selectedMessageRow()) {
+  function captureMediaReturn(row: HTMLElement | null = selectedMessageRow()) {
     clearMediaReturn();
     if (!(row instanceof HTMLElement)) return;
     const scroller = messageScroller(row);
@@ -1376,7 +1499,7 @@
     return fallback instanceof HTMLElement && isVisible(fallback) ? fallback : null;
   }
 
-  function mediaViewerCloseControl(viewer) {
+  function mediaViewerCloseControl(viewer: Element | null): HTMLElement | null {
     if (!(viewer instanceof Element)) return null;
     const labelled = [...viewer.querySelectorAll('button[aria-label], [role="button"][aria-label]')]
       .find((button) => (
@@ -1393,12 +1516,12 @@
     return control instanceof HTMLElement && isVisible(control) ? control : null;
   }
 
-  function mediaViewerNavigationControl(viewer, direction) {
+  function mediaViewerNavigationControl(viewer: Element | null, direction: number): HTMLElement | null {
     if (!(viewer instanceof Element)) return null;
     const expression = direction < 0
       ? /(?:^|[\s_-])(?:previous|prev)(?:[\s_-]|$)|(?:arrow|chevron)[\s_-]*left|left[\s_-]*(?:arrow|chevron)/i
       : /(?:^|[\s_-])next(?:[\s_-]|$)|(?:arrow|chevron)[\s_-]*right|right[\s_-]*(?:arrow|chevron)/i;
-    return [...viewer.querySelectorAll([
+    return [...viewer.querySelectorAll<HTMLElement>([
       "button:not([disabled])",
       '[role="button"]:not([aria-disabled="true"])',
     ].join(", "))].find((control) => {
@@ -1418,7 +1541,7 @@
     }) || null;
   }
 
-  function dispatchMediaArrow(viewer, direction) {
+  function dispatchMediaArrow(viewer: Element | null, direction: number): boolean {
     if (!(viewer instanceof Element)) return false;
     const key = direction < 0 ? "ArrowLeft" : "ArrowRight";
     const init = {
@@ -1433,7 +1556,7 @@
     return true;
   }
 
-  async function navigateMediaOverlay(direction) {
+  async function navigateMediaOverlay(direction: number): Promise<boolean> {
     normalModeLockUntil = 0;
     messageModeLockUntil = performance.now() + 500;
     messageOverlayKind = "media";
@@ -1491,11 +1614,14 @@
     return null;
   }
 
-  function focusComposer(options = {}) {
+  function focusComposer(options: ComposerOptions = {}): HTMLElement | null {
+    cancelChatNavigation();
+    if (options.intent !== undefined && !commandIntentIsCurrent(options.intent)) return null;
     const editor = composer();
     if (!editor) {
       if (pendingChatActivation && !options.retrying) {
         pendingChatActivation.then(() => {
+          if (options.intent !== undefined && !commandIntentIsCurrent(options.intent)) return;
           if (!focusComposer({ ...options, retrying: true, announce: false }) && options.announce !== false) {
             flash("Open a chat before entering Insert mode");
           }
@@ -1512,35 +1638,35 @@
     return editor;
   }
 
-  function composeFromMessageMode() {
+  function composeFromMessageMode(intent: number) {
     const row = selectedMessageRow();
     if (!row) {
-      focusComposer();
+      focusComposer({ intent });
       return;
     }
 
     captureMessageReturn(row);
-    if (!focusComposer()) clearMessageReturn();
+    if (!focusComposer({ intent }) && commandIntentIsCurrent(intent)) clearMessageReturn();
   }
 
   async function composeAtLatestMessage() {
     const rows = messageRows();
     const current = selectedMessageRow() || rows.at(-1);
-    let scroller = messageScroller(current);
+    const initialScroller = messageScroller(current);
 
     // WhatsApp virtualizes long chats. Wait for the scroll boundary instead of
     // assuming a fixed render delay, then perform one bounded second pass.
-    if (scroller) {
-      scroller.scrollTop = scroller.scrollHeight;
+    if (initialScroller) {
+      initialScroller.scrollTop = initialScroller.scrollHeight;
       await waitForPredicate(() => (
-        scroller.scrollTop >= scroller.scrollHeight - scroller.clientHeight - 1
-      ) ? true : null, { root: scroller, timeout: 700, poll: true });
+        initialScroller.scrollTop >= initialScroller.scrollHeight - initialScroller.clientHeight - 1
+      ) ? true : null, { root: initialScroller, timeout: 700, poll: true });
       const renderedLatest = messageRows().at(-1);
-      scroller = messageScroller(renderedLatest) || scroller;
-      scroller.scrollTop = scroller.scrollHeight;
+      const latestScroller = messageScroller(renderedLatest) || initialScroller;
+      latestScroller.scrollTop = latestScroller.scrollHeight;
       await waitForPredicate(() => (
-        scroller.scrollTop >= scroller.scrollHeight - scroller.clientHeight - 1
-      ) ? true : null, { root: scroller, timeout: 700, poll: true });
+        latestScroller.scrollTop >= latestScroller.scrollHeight - latestScroller.clientHeight - 1
+      ) ? true : null, { root: latestScroller, timeout: 700, poll: true });
     }
 
     const latest = messageRows().at(-1) || current;
@@ -1575,20 +1701,24 @@
     return dialog instanceof HTMLElement && isVisible(dialog) ? dialog : null;
   }
 
-  function isPopupSearchContext(element) {
+  function isPopupSearchContext(element: EventTarget | null): boolean {
     const dialog = popupSearchDialog();
     return element instanceof Element && Boolean(dialog?.contains(element));
   }
 
-  function focusSearch() {
+  function focusSearch(intent: number) {
+    cancelChatNavigation();
+    if (!commandIntentIsCurrent(intent)) return;
     normalModeLockUntil = 0;
 
     // Run WhatsApp's own extended-search shortcut after the `/` keydown has
     // finished. This preserves its popup UI without inserting `/` into it.
     setTimeout(() => {
+      if (!commandIntentIsCurrent(intent)) return;
       dispatchWhatsAppShortcut({ key: "k", code: "KeyK", altKey: true });
 
       const focusWhenReady = (attempt = 0) => {
+        if (!commandIntentIsCurrent(intent)) return;
         if (isPopupSearchEditor(document.activeElement)) {
           setMode("insert", { focus: false });
           return;
@@ -1614,8 +1744,8 @@
     }, 0);
   }
 
-  function isPopupSearchEditor(element) {
-    return (
+  function isPopupSearchEditor(element: EventTarget | null): element is Element {
+    return Boolean(
       element instanceof Element &&
       isEditable(element) &&
       element.closest('[role="dialog"]') &&
@@ -1623,8 +1753,8 @@
     );
   }
 
-  function isSidebarSearchEditor(element) {
-    return (
+  function isSidebarSearchEditor(element: EventTarget | null): element is Element {
+    return Boolean(
       element instanceof Element &&
       isEditable(element) &&
       element.closest("#side") &&
@@ -1632,7 +1762,7 @@
     );
   }
 
-  function clearSearchEditor(editor) {
+  function clearSearchEditor(editor: HTMLElement | null | undefined) {
     if (editor instanceof HTMLInputElement || editor instanceof HTMLTextAreaElement) {
       const prototype = editor instanceof HTMLInputElement
         ? HTMLInputElement.prototype
@@ -1663,7 +1793,7 @@
     }
   }
 
-  function messageReturnRow(row = messageModeReturnRow, key = messageModeReturnKey) {
+  function messageReturnRow(row: HTMLElement | null = messageModeReturnRow, key = messageModeReturnKey): HTMLElement | null {
     if (row?.isConnected && messageContainer(row)) {
       return row;
     }
@@ -1698,7 +1828,7 @@
       if (pendingMessageReturnRestore === restoreSerial) pendingMessageReturnRestore = 0;
       return;
     }
-    if (isEditable(editor) && editor.isConnected && document.activeElement === editor) editor.blur();
+    if (isEditable(editor) && editor instanceof HTMLElement && editor.isConnected && document.activeElement === editor) editor.blur();
     const row = await waitForPredicate(() => (
       restoreSerial === messageReturnRestoreSerial
         ? messageReturnRow(returnRow, returnKey)
@@ -1724,7 +1854,7 @@
       return;
     }
 
-    if (isEditable(document.activeElement)) {
+    if (isEditable(document.activeElement) && document.activeElement instanceof HTMLElement) {
       const editor = document.activeElement;
       const popupSearch = isPopupSearchEditor(editor);
       if (isSidebarSearchEditor(editor)) clearSearchEditor(editor);
@@ -1755,7 +1885,7 @@
     setMode("normal");
   }
 
-  function execute(action) {
+  function execute(action: WhatsVimAction, intent: number) {
     switch (action) {
       case "next-chat":
         setActivePane("chat", { announce: false });
@@ -1777,17 +1907,18 @@
         if (setActivePane("chat") && mode === "message") keepNormalFocus();
         break;
       case "select-message-pane":
-        selectMessagePane();
+        selectMessagePane(intent);
         break;
       case "open-message-media-or-select-message-pane":
-        openSelectedMessageMedia({ selectMessagePaneWhenUnavailable: true });
+        openSelectedMessageMedia({ intent, selectMessagePaneWhenUnavailable: true });
         break;
       case "escape":
+        cancelChatNavigation();
         if (mode === "message") leaveMessageModeOrCloseOverlay();
         else leaveInsertOrClosePane();
         break;
       case "compose":
-        focusComposer();
+        focusComposer({ intent });
         break;
       case "next-message":
         setActivePane("message", { announce: false });
@@ -1798,19 +1929,19 @@
         navigateMessage(-1);
         break;
       case "reply-message":
-        replyToSelectedMessage();
+        replyToSelectedMessage(intent);
         break;
       case "edit-message":
-        editSelectedMessage();
+        editSelectedMessage(intent);
         break;
       case "compose-from-message":
-        composeFromMessageMode();
+        composeFromMessageMode(intent);
         break;
       case "compose-at-latest-message":
         composeAtLatestMessage();
         break;
       case "react-message":
-        reactToSelectedMessage();
+        reactToSelectedMessage(intent);
         break;
       case "reaction-left":
         moveReactionFocus("left");
@@ -1837,13 +1968,13 @@
         navigateMediaOverlay(1);
         break;
       case "open-message-media":
-        openSelectedMessageMedia();
+        openSelectedMessageMedia({ intent });
         break;
       case "expand-message":
         expandSelectedMessage();
         break;
       case "search":
-        focusSearch();
+        focusSearch(intent);
         break;
       case "help":
         setHelpOpen(!helpOpen);
@@ -1853,8 +1984,13 @@
     }
   }
 
-  function onKeyDown(event) {
+  function onKeyDown(event: KeyboardEvent) {
     if (!event.isTrusted) return;
+
+    if (ownedCompositionEnter && event.key === "Enter") {
+      consume(event);
+      return;
+    }
 
     if (helpOpen) {
       const closeHelpShortcut =
@@ -1873,16 +2009,19 @@
       !event.altKey &&
       !event.metaKey &&
       event.key.toLowerCase() === "v";
-    if (pasteShortcut && focusComposer({ announce: false })) {
-      // Leave the trusted event untouched. Chromium performs the paste after
-      // keydown, using the composer we focused synchronously above.
-      return;
+    if (pasteShortcut) {
+      const intent = beginCommandIntent();
+      if (focusComposer({ announce: false, intent })) {
+        // Leave the trusted event untouched. Chromium performs the paste after
+        // keydown, using the composer we focused synchronously above.
+        return;
+      }
     }
 
     const targetIsEditable = isEditable(event.target);
     const targetInPopupSearch = isPopupSearchContext(event.target);
     const targetInReactionSearch = isReactionSearchContext(event.target);
-    const targetInReactionPicker = reactionPicker()?.contains(event.target) === true;
+    const targetInReactionPicker = event.target instanceof Node && reactionPicker()?.contains(event.target) === true;
     const lockedMode = targetInPopupSearch || targetInReactionSearch
       ? null
       : lockedCommandMode();
@@ -1913,7 +2052,7 @@
       setMode("normal", { focus: false });
     }
 
-    const decision = keymap.resolve(event, {
+    const decision = resolveKey(event, {
       mode,
       pendingG,
       activePane,
@@ -1942,6 +2081,7 @@
     ) {
       // In the full picker, Escape changes from search/typing to Vim grid
       // navigation. A subsequent Escape in Normal mode closes the picker.
+      beginCommandIntent();
       consume(event);
       focusReactionGrid();
       return;
@@ -1954,6 +2094,7 @@
     ) {
       // Close the popup while it still owns focus, then stop the physical key
       // before Vimium can consume it or WhatsApp can also collapse the sidebar.
+      beginCommandIntent();
       consume(event);
       dispatchWhatsAppShortcut({ key: "Escape", code: "Escape" });
       setMode("normal", { focus: false });
@@ -1962,10 +2103,16 @@
     }
 
     consume(event);
-    if (decision.action !== "await-g") execute(decision.action);
+    if (decision.action !== "await-g") {
+      const intent = beginCommandIntent();
+      if (event.key === "Enter" && (decision.action === "compose" || decision.action === "compose-from-message")) {
+        ownedCompositionEnter = true;
+      }
+      execute(decision.action, intent);
+    }
   }
 
-  function onPointerUp(event) {
+  function onPointerUp(event: PointerEvent) {
     // A user pointer action during the bounded cancellation wait has chosen a
     // new context. Do not let the delayed keyed restore steal focus back.
     if (pendingMessageReturnRestore) {
@@ -1973,8 +2120,10 @@
       pendingMessageReturnRestore = 0;
     }
     const target = event.composedPath?.()[0] || event.target;
+    beginCommandIntent();
     const row = chatRow(target);
     if (row) {
+      cancelChatNavigation();
       activeChatRow = row;
       selectChatRow(row);
       setActivePane("chat", { announce: false });
@@ -1984,6 +2133,7 @@
       return;
     }
     if (isReactionSearchContext(target)) {
+      cancelChatNavigation();
       normalModeLockUntil = 0;
       messageModeLockUntil = 0;
       messageOverlayKind = "reaction";
@@ -1991,6 +2141,7 @@
       return;
     }
     if (isEditable(target)) {
+      cancelChatNavigation();
       normalModeLockUntil = 0;
       messageModeLockUntil = 0;
       if (mode === "message") {
@@ -2038,7 +2189,11 @@
     setMode("normal");
   }
 
-  function onKeyUp(event) {
+  function onKeyUp(event: KeyboardEvent) {
+    if (ownedCompositionEnter && event.key === "Enter") {
+      ownedCompositionEnter = false;
+      consume(event);
+    }
     heldPaneNavigationKeys.delete(event.code || event.key);
   }
 
@@ -2050,9 +2205,17 @@
 
   globalThis.addEventListener("keydown", onKeyDown, true);
   globalThis.addEventListener("keyup", onKeyUp, true);
-  globalThis.addEventListener("blur", () => heldPaneNavigationKeys.clear());
+  globalThis.addEventListener("blur", () => {
+    heldPaneNavigationKeys.clear();
+    ownedCompositionEnter = false;
+    cancelChatNavigation();
+  });
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState !== "visible") heldPaneNavigationKeys.clear();
+    if (document.visibilityState !== "visible") {
+      heldPaneNavigationKeys.clear();
+      ownedCompositionEnter = false;
+      cancelChatNavigation();
+    }
   });
   document.addEventListener("pointerup", onPointerUp, true);
   document.addEventListener("focusin", (event) => {
@@ -2067,7 +2230,7 @@
       normalModeLockUntil = 0;
       messageModeLockUntil = 0;
       setMode("insert", { focus: false });
-    } else if (reactionPicker()?.contains(event.target)) {
+    } else if (event.target instanceof Node && reactionPicker()?.contains(event.target)) {
       setMode("message", { focus: false });
     } else if (isEditable(event.target)) {
       if (performance.now() < messageModeLockUntil) {

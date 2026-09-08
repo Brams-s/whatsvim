@@ -5,19 +5,23 @@
   "description": "MV3 content extension providing Vim-style navigation for WhatsApp Web.",
   "type": "commonjs",
   "engines": {
-    "node": ">=22"
+    "node": "^22.11 || ^24 || >=26",
+    "npm": ">=10.9"
   },
   "scripts": {
-    "test": "node --test tests/config.test.mjs tests/keymap.test.js tests/package.test.mjs tests/policy-check.test.mjs tests/version-sync.test.mjs",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node --test tests/browser-safety.test.mjs tests/config.test.mjs tests/keymap.test.js tests/package.test.mjs tests/policy-check.test.mjs tests/runtime-build.test.mjs tests/version-sync.test.mjs",
     "version:check": "node scripts/version-sync.mjs --check",
     "version:sync": "node scripts/version-sync.mjs",
     "version:changesets": "changeset version && node scripts/version-sync.mjs",
-    "package": "node scripts/package.mjs",
+    "package": "npm run build && node scripts/package.mjs",
     "verify:package": "node scripts/verify-package.mjs",
-    "policy:check": "node scripts/policy-check.mjs",
-    "test:browser": "node tests/browser-smoke.mjs"
+    "policy:check": "npm run build && node scripts/policy-check.mjs",
+    "test:browser": "npm run build && node scripts/browser-smoke-runner.mjs"
   },
   "devDependencies": {
-    "@changesets/cli": "^3.0.1"
+    "@changesets/cli": "^3.0.1",
+    "typescript": "^5.9.3"
   }
 }
