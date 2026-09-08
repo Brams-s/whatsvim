@@ -1,6 +1,6 @@
 # Chrome Web Store listing material
 
-**Last Updated:** 2026-09-06
+**Last Updated:** 2026-09-08
 
 ## Proposed listing copy
 
@@ -48,11 +48,11 @@ content/resources, and user activity or command input. Select PII/contact-label
 categories too if the offered definitions cover visible labels. State that use is
 for core functionality only, with no sale, ads, transmission, or persistence.
 
-**Planned policy and support URLs:** use
-<https://brams-s.github.io/whatsvim/> only after GitHub Pages is enabled and the
-page is anonymously checked without login or JavaScript. Support is planned at
+**Policy and support URLs:** GitHub Pages and public Issues were enabled and
+anonymously verified on 2026-09-08. The live privacy URL is
+<https://brams-s.github.io/whatsvim/>. Support is available at
 <https://github.com/Brams-s/whatsvim/issues>. The repository privacy-policy link
-is public; external Pages and dashboard status are not established here.
+is also public; dashboard status is not established here.
 
 ## Submission checklist
 
@@ -62,9 +62,9 @@ is public; external Pages and dashboard status are not established here.
   test:browser`, `npm run package`, and `npm run verify:package`; complete
   manual real-WhatsApp smoke testing.
 - [ ] Create a Chrome Web Store dashboard item and enter the listing copy above.
-- [ ] Enable and anonymously verify the planned privacy URL before entering it
-  in the dashboard; do not present it as live before then.
-- [ ] Supply the public Issues support URL and warn users not to post sensitive data.
+- [x] Enable and anonymously verify the Pages privacy URL before entering it in
+  the dashboard.
+- [x] Supply the public Issues support URL and warn users not to post sensitive data.
 - [ ] Upload the included 128×128 extension icon.
 - [ ] Review and upload the corrected, dimension-verified 440x280 promotional tile:
   `store-assets/whatsvim-small-promo-440x280.png`.

@@ -100,6 +100,5 @@ for commands, Changesets, and browser smoke testing.
   at <https://github.com/Brams-s/whatsvim/blob/main/PRIVACY.md>
 - Support: <https://github.com/Brams-s/whatsvim/issues> — do not post private
   messages, contact details, or other sensitive information in a public issue.
-- Planned hosted privacy URL: <https://brams-s.github.io/whatsvim/>. GitHub Pages
-  must be enabled and this URL checked anonymously before it is used in a store
-  dashboard or presented as a live policy URL.
+- Live hosted privacy URL: <https://brams-s.github.io/whatsvim/>. It was
+  anonymously verified on 2026-09-08.

@@ -46,8 +46,8 @@ cannot reapply that prior release material.
    `content.css`, `keymap.js`, `content.js`, and the four manifest-referenced
    PNGs under `icons/`, with `manifest.json` and `LICENSE` at the ZIP root (no
    enclosing directory).
-6. Complete the Pages and Issues gate below before using their URLs in a store
-   dashboard.
+6. Confirm the live Pages privacy and public Issues URLs below remain available
+   before using them in a store dashboard.
 7. For a stable, CWS-eligible version only, upload that ZIP as a dashboard
    **draft**. The Chrome Web Store dashboard's upload/validation outcome is the
    final authoritative packaging validation; resolve its findings before any
@@ -58,14 +58,12 @@ cannot reapply that prior release material.
 
 ## Pages and Issues gate
 
-After an authorized push only, configure GitHub Pages to deploy from the `main`
-branch's `/docs` folder (or an explicitly approved Pages branch/source). Then
-visit <https://brams-s.github.io/whatsvim/> anonymously, without a logged-in
-GitHub session or JavaScript dependence, and verify the privacy and support
-links and the policy text before entering that URL in a dashboard. GitHub Issue
-forms become publicly usable only after their files are pushed; verify their
-public presentation then. No workflow in this repository enables Pages, uploads
-to the Chrome Web Store, or publishes a store listing.
+GitHub Pages and the repository's public Issues were enabled and anonymously
+verified on 2026-09-08. Before entering the privacy URL in a dashboard, confirm
+<https://brams-s.github.io/whatsvim/> remains publicly available without a
+logged-in GitHub session or JavaScript dependence, and confirm the privacy and
+support links and policy text remain correct. No workflow in this repository
+uploads to the Chrome Web Store or publishes a store listing.
 
 ## Chrome Web Store checklist
 
@@ -124,11 +122,11 @@ and whether publication is deferred or immediate. These are external account
 decisions; neither the workflow nor this repository uploads to the Chrome Web
 Store.
 
-An approved GitHub remote, verified branch protection for `main`, a protected
-release environment with the required reviewers, and Actions permission settings
-remain prerequisites before enabling publication. The workflow intentionally
-does not declare that environment until its remote protection is configured;
-this work does not create or change any remote setting.
+The GitHub `release` environment now exists with required reviewer approval, and
+the `promote` job declares that environment. An approved GitHub remote, verified
+branch protection for `main`, and Actions permission settings remain
+prerequisites before enabling publication. This repository does not create or
+change those remote settings.
 
 ## Firefox path (deferred)
 

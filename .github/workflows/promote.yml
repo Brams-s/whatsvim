@@ -43,6 +43,7 @@ jobs:
 
   promote:
     needs: validate-approved-sha
+    environment: release
     permissions:
       contents: write
     runs-on: ubuntu-24.04
