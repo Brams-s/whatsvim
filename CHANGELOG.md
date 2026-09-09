@@ -11,6 +11,8 @@
   handling for delayed virtualized rows.
 - Improve rapid chat navigation and prevent stale asynchronous commands from
   reclaiming a newer keyboard or pointer context.
+- Preserve the selected quick or expanded reaction when WhatsApp refreshes the
+  emoji picker, including keyboard access to more reactions.
 - `Space` expands the selected message's visible Read more control.
 
 ### Engineering and release preparation

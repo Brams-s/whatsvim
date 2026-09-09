@@ -360,6 +360,70 @@ await evaluate(`(() => {
     document.querySelectorAll(".test-message-menu").forEach((menu) => menu.remove());
   }
 
+  function recordReaction(value) {
+    fixture.dataset.selectedReaction = value;
+    fixture.dataset.reactionActivationCount = String(Number(fixture.dataset.reactionActivationCount || 0) + 1);
+  }
+
+  function recordPlusActivation() {
+    fixture.dataset.plusActivationCount = String(Number(fixture.dataset.plusActivationCount || 0) + 1);
+  }
+
+  function installReactionActivation(choice, dialog) {
+    const quick = /^test-reaction-(\\d+)$/.exec(choice.id);
+    const row = /^test-reaction-row-(\\d+)$/.exec(choice.id);
+    const expanded = /^test-expanded-reaction-(\\d+)$/.exec(choice.id);
+    choice.addEventListener("click", () => {
+      if (quick) {
+        if (quick[1] === "4") {
+          recordPlusActivation();
+          if (fixture.dataset.delayedReactionExpansion === "true") {
+            dialog.remove();
+            setTimeout(openExpandedReactionPicker, 80);
+          } else {
+            openExpandedReactionPicker();
+          }
+        }
+        else {
+          recordReaction(quick[1]);
+          dialog.remove();
+        }
+      } else if (row) {
+        recordReaction(\`row-\${row[1]}\`);
+        dialog.remove();
+      } else if (expanded) {
+        recordReaction(\`expanded-\${expanded[1]}\`);
+        dialog.remove();
+      }
+    });
+  }
+
+  globalThis.__whatsvimRecloneReactionChoices = ({
+    focusFirst = false,
+    labelLess = false,
+    markFirst = false,
+    reorder = false,
+  } = {}) => {
+    const dialog = document.querySelector("#test-reaction-picker");
+    if (!(dialog instanceof HTMLElement)) return;
+    const replacements = [];
+    for (const choice of dialog.querySelectorAll("button")) {
+      const replacement = choice.cloneNode(true);
+      replacement.classList.remove("whatsvim-selected-reaction");
+      if (labelLess) replacement.removeAttribute("aria-label");
+      installReactionActivation(replacement, dialog);
+      choice.replaceWith(replacement);
+      replacements.push(replacement);
+    }
+    const quickChoices = replacements.filter((choice) => /^test-reaction-[0-9]+$/.test(choice.id));
+    if (reorder && quickChoices.length) {
+      const grid = dialog.querySelector('[role="grid"]');
+      for (const choice of quickChoices.toReversed()) grid?.append(choice);
+    }
+    if (markFirst) replacements[0]?.classList.add("whatsvim-selected-reaction");
+    if (focusFirst) replacements[0]?.focus();
+  };
+
   function openEditModal() {
     closeMessageMenus();
     const modal = document.createElement("div");
@@ -404,10 +468,7 @@ await evaluate(`(() => {
       choice.setAttribute("aria-label", \`Reaction row emoji \${index + 1}\`);
       choice.textContent = \`row emoji \${index + 1}\`;
       choice.style.cssText = "display:block;width:48px;height:48px";
-      choice.addEventListener("click", () => {
-        fixture.dataset.selectedReaction = \`row-\${index}\`;
-        dialog.remove();
-      });
+      installReactionActivation(choice, dialog);
       reactionRow.append(choice);
     }
     const grid = document.createElement("div");
@@ -419,10 +480,7 @@ await evaluate(`(() => {
       choice.setAttribute("aria-label", \`Expanded emoji \${index + 1}\`);
       choice.textContent = \`emoji \${index + 1}\`;
       choice.style.cssText = "display:block;width:48px;height:48px";
-      choice.addEventListener("click", () => {
-        fixture.dataset.selectedReaction = \`expanded-\${index}\`;
-        dialog.remove();
-      });
+      installReactionActivation(choice, dialog);
       grid.append(choice);
     }
     dialog.append(search, reactionRow, grid);
@@ -456,14 +514,7 @@ await evaluate(`(() => {
       choice.setAttribute("aria-label", more ? "More reactions" : \`React with option \${index + 1}\`);
       choice.textContent = more ? "+" : \`emoji \${index + 1}\`;
       choice.style.cssText = "display:block;width:48px;height:48px";
-      choice.addEventListener("click", () => {
-        if (more) {
-          openExpandedReactionPicker();
-          return;
-        }
-        fixture.dataset.selectedReaction = String(index);
-        dialog.remove();
-      });
+      installReactionActivation(choice, dialog);
       grid.append(choice);
     }
     dialog.append(grid);
@@ -1261,6 +1312,69 @@ await waitFor('document.querySelector("#test-reaction-picker") === null');
 assert.equal(await evaluate('document.querySelector("#whatsvim-test-fixture")?.dataset.selectedReaction'), "1");
 await waitFor('document.activeElement?.id === "whatsvim-sentinel"');
 assert.equal(await evaluate('document.querySelector("#whatsvim-mode")?.dataset.context'), "message");
+
+// WhatsApp can replace every quick-picker choice between navigation and key
+// activation. The logical selection, rather than the detached button, wins.
+await press({ key: "R", code: "KeyR", virtualKeyCode: 82, modifiers: 8, text: "R" });
+await waitFor('document.querySelector("#test-reaction-picker") !== null');
+await press({ key: "l", code: "KeyL", virtualKeyCode: 76, text: "l" });
+await evaluate('document.querySelector("#whatsvim-test-fixture").dataset.selectedReaction = ""; document.querySelector("#whatsvim-test-fixture").dataset.reactionActivationCount = "0"; globalThis.__whatsvimRecloneReactionChoices({ focusFirst: true, markFirst: true })');
+assert.equal(await evaluate('document.activeElement?.id'), "test-reaction-0");
+await press({ key: "Enter", code: "Enter", virtualKeyCode: 13 });
+await waitFor('document.querySelector("#test-reaction-picker") === null');
+assert.equal(await evaluate('document.querySelector("#whatsvim-test-fixture")?.dataset.selectedReaction'), "1");
+assert.equal(await evaluate('document.querySelector("#whatsvim-test-fixture")?.dataset.reactionActivationCount'), "1");
+
+// Reordering proves that the unique semantic key wins before the old index,
+// first replacement focus, or a conflicting selected marker.
+await press({ key: "R", code: "KeyR", virtualKeyCode: 82, modifiers: 8, text: "R" });
+await waitFor('document.querySelector("#test-reaction-picker") !== null');
+await press({ key: "l", code: "KeyL", virtualKeyCode: 76, text: "l" });
+await evaluate('document.querySelector("#whatsvim-test-fixture").dataset.selectedReaction = ""; document.querySelector("#whatsvim-test-fixture").dataset.reactionActivationCount = "0"; globalThis.__whatsvimRecloneReactionChoices({ focusFirst: true, markFirst: true, reorder: true })');
+await press({ key: "Enter", code: "Enter", virtualKeyCode: 13 });
+await waitFor('document.querySelector("#test-reaction-picker") === null');
+assert.equal(await evaluate('document.querySelector("#whatsvim-test-fixture")?.dataset.selectedReaction'), "1");
+assert.equal(await evaluate('document.querySelector("#whatsvim-test-fixture")?.dataset.reactionActivationCount'), "1");
+
+await press({ key: "R", code: "KeyR", virtualKeyCode: 82, modifiers: 8, text: "R" });
+await waitFor('document.querySelector("#test-reaction-picker") !== null');
+await press({ key: "j", code: "KeyJ", virtualKeyCode: 74, text: "j" });
+await evaluate('document.querySelector("#whatsvim-test-fixture").dataset.selectedReaction = ""; document.querySelector("#whatsvim-test-fixture").dataset.reactionActivationCount = "0"; globalThis.__whatsvimRecloneReactionChoices({ focusFirst: true, labelLess: true, markFirst: true })');
+await press({ key: " ", code: "Space", virtualKeyCode: 32, text: " " });
+await waitFor('document.querySelector("#test-reaction-picker") === null');
+assert.equal(await evaluate('document.querySelector("#whatsvim-test-fixture")?.dataset.selectedReaction'), "2");
+assert.equal(await evaluate('document.querySelector("#whatsvim-test-fixture")?.dataset.reactionActivationCount'), "1");
+
+await press({ key: "R", code: "KeyR", virtualKeyCode: 82, modifiers: 8, text: "R" });
+await waitFor('document.querySelector("#test-reaction-picker") !== null');
+await press({ key: "j", code: "KeyJ", virtualKeyCode: 74, text: "j" });
+await press({ key: "j", code: "KeyJ", virtualKeyCode: 74, text: "j" });
+await evaluate('const fixture = document.querySelector("#whatsvim-test-fixture"); fixture.dataset.selectedReaction = ""; fixture.dataset.reactionActivationCount = "0"; fixture.dataset.plusActivationCount = "0"; fixture.dataset.delayedReactionExpansion = "true"; document.querySelector("#test-reaction-4").setAttribute("aria-label", "Meer reacties"); globalThis.__whatsvimRecloneReactionChoices({ focusFirst: true, markFirst: true })');
+await press({ key: "Enter", code: "Enter", virtualKeyCode: 13 });
+await waitFor('document.activeElement?.id === "test-reaction-search"');
+assert.notEqual(await evaluate('document.querySelector("#whatsvim-test-fixture")?.dataset.selectedReaction'), "0");
+assert.equal(await evaluate('document.querySelector("#whatsvim-test-fixture")?.dataset.reactionActivationCount'), "0");
+assert.equal(await evaluate('document.querySelector("#whatsvim-test-fixture")?.dataset.plusActivationCount'), "1");
+await evaluate('document.querySelector("#whatsvim-test-fixture").dataset.delayedReactionExpansion = "false"');
+await press({ key: "Escape", code: "Escape", virtualKeyCode: 27 });
+await press({ key: "Escape", code: "Escape", virtualKeyCode: 27 });
+await waitFor('document.querySelector("#test-reaction-picker") === null');
+
+await press({ key: "R", code: "KeyR", virtualKeyCode: 82, modifiers: 8, text: "R" });
+await waitFor('document.querySelector("#test-reaction-picker") !== null');
+await press({ key: "j", code: "KeyJ", virtualKeyCode: 74, text: "j" });
+await press({ key: "j", code: "KeyJ", virtualKeyCode: 74, text: "j" });
+await press({ key: "Enter", code: "Enter", virtualKeyCode: 13 });
+await waitFor('document.activeElement?.id === "test-reaction-search"');
+await press({ key: "Escape", code: "Escape", virtualKeyCode: 27 });
+await press({ key: "j", code: "KeyJ", virtualKeyCode: 74, text: "j" });
+await press({ key: "l", code: "KeyL", virtualKeyCode: 76, text: "l" });
+assert.equal(await evaluate('document.activeElement?.id'), "test-expanded-reaction-1");
+await evaluate('document.querySelector("#whatsvim-test-fixture").dataset.selectedReaction = ""; document.querySelector("#whatsvim-test-fixture").dataset.reactionActivationCount = "0"; globalThis.__whatsvimRecloneReactionChoices()');
+await press({ key: "Enter", code: "Enter", virtualKeyCode: 13 });
+await waitFor('document.querySelector("#test-reaction-picker") === null');
+assert.equal(await evaluate('document.querySelector("#whatsvim-test-fixture")?.dataset.selectedReaction'), "expanded-1");
+assert.equal(await evaluate('document.querySelector("#whatsvim-test-fixture")?.dataset.reactionActivationCount'), "1");
 
 await press({ key: "R", code: "KeyR", virtualKeyCode: 82, modifiers: 8, text: "R" });
 await waitFor('document.querySelector("#test-reaction-picker") !== null');

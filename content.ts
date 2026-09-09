@@ -52,6 +52,7 @@
   type WaitOptions = { poll?: boolean; root?: Node | null; timeout?: number };
   type Shortcut = { altKey?: boolean; code: string; ctrlKey?: boolean; key: string; shiftKey?: boolean };
   type MouseInit = MouseEventInit & { clientX: number; clientY: number; view: Window };
+  type ReactionChoiceState = { index: number; key: string };
 
   const helpGroups: readonly HelpGroup[] = Object.freeze([
     ["Panes", [["h / l", "select chat list / message pane"], ["j / k", "move in the selected pane"], ["Shift+J / Shift+K", "move between chats"], ["gg / G", "first / last chat"]]],
@@ -76,6 +77,7 @@
   let activeMessageRow: HTMLElement | null = null;
   let activeMessageKey = "";
   let activeReactionChoice: HTMLElement | null = null;
+  let activeReactionState: ReactionChoiceState = { key: "", index: -1 };
   let messageModeReturnRow: HTMLElement | null = null;
   let messageModeReturnKey = "";
   let messageReturnRestoreSerial = 0;
@@ -1153,11 +1155,66 @@
       : reactionChoiceCandidates(picker);
   }
 
-  function clearReactionFocus() {
+  function reactionChoiceKey(choice: HTMLElement): string {
+    const emoji = choice.getAttribute("data-emoji")?.trim();
+    if (emoji) return `emoji:${emoji}`;
+    const label = choice.getAttribute("aria-label")?.trim();
+    return label ? `label:${label}` : "";
+  }
+
+  function rememberReactionChoice(choice: HTMLElement, choices: readonly HTMLElement[]) {
+    activeReactionChoice = choice;
+    activeReactionState = {
+      key: reactionChoiceKey(choice),
+      index: choices.indexOf(choice),
+    };
+  }
+
+  function clearReactionMarker() {
     document.querySelectorAll(`.${selectedReactionClass}`).forEach((choice) => {
       choice.classList.remove(selectedReactionClass);
     });
+  }
+
+  function clearReactionFocus() {
+    clearReactionMarker();
     activeReactionChoice = null;
+    activeReactionState = { key: "", index: -1 };
+  }
+
+  // WhatsApp regularly replaces picker subtrees as emoji data loads. Keep the
+  // live node as a fast path, but recover its logical choice when it has been
+  // detached before a subsequent navigation or activation.
+  function currentReactionChoice(choices: readonly HTMLElement[]): HTMLElement | null {
+    if (!choices.length) return null;
+    if (activeReactionChoice && choices.includes(activeReactionChoice)) return activeReactionChoice;
+
+    const indexedChoice = activeReactionState.index >= 0
+      ? choices[activeReactionState.index]
+      : undefined;
+    if (activeReactionState.key) {
+      // Labels can repeat in a picker. When its previous slot still has the
+      // same semantic key, it is the least ambiguous replacement for the
+      // detached node; otherwise prefer any semantic match over host focus.
+      const keyedChoice = indexedChoice && reactionChoiceKey(indexedChoice) === activeReactionState.key
+        ? indexedChoice
+        : choices.find((choice) => reactionChoiceKey(choice) === activeReactionState.key);
+      if (keyedChoice) {
+        rememberReactionChoice(keyedChoice, choices);
+        return keyedChoice;
+      }
+    }
+    if (indexedChoice) {
+      rememberReactionChoice(indexedChoice, choices);
+      return indexedChoice;
+    }
+
+    const marked = choices.find((choice) => choice.classList.contains(selectedReactionClass));
+    const focused = document.activeElement;
+    const focusedChoice = choices.find((choice) => choice === focused || choice.contains(focused));
+    const choice = marked || focusedChoice || choices[0];
+    rememberReactionChoice(choice, choices);
+    return choice;
   }
 
   function cancelReactionSearchFocus() {
@@ -1168,8 +1225,8 @@
   function focusReactionChoice(choice: HTMLElement | null | undefined): boolean {
     if (!(choice instanceof HTMLElement) || !choice.isConnected) return false;
     cancelReactionSearchFocus();
-    clearReactionFocus();
-    activeReactionChoice = choice;
+    clearReactionMarker();
+    rememberReactionChoice(choice, reactionChoices(reactionPicker()));
     messageOverlayKind = "reaction";
     choice.classList.add(selectedReactionClass);
     if (!choice.matches("button, input, select, textarea, [tabindex]")) {
@@ -1219,7 +1276,7 @@
 
   function focusReactionGrid(picker: Element | null = reactionPicker()): boolean {
     const choices = reactionChoices(picker);
-    const choice = activeReactionChoice && choices.includes(activeReactionChoice) ? activeReactionChoice : choices[0];
+    const choice = currentReactionChoice(choices);
     if (focusReactionChoice(choice)) return true;
     flash("No emoji results are available");
     setMode("message", { focus: false });
@@ -1242,10 +1299,7 @@
       return;
     }
 
-    const focused = document.activeElement;
-    const current = activeReactionChoice && choices.includes(activeReactionChoice)
-      ? activeReactionChoice
-      : choices.find((choice) => choice === focused || choice.contains(focused)) || choices[0];
+    const current = currentReactionChoice(choices);
     if (!current) return;
     const origin = reactionChoiceCenter(current);
     const horizontal = direction === "left" || direction === "right";
@@ -1279,10 +1333,7 @@
   async function chooseFocusedReaction() {
     const picker = reactionPicker();
     const choices = reactionChoices(picker);
-    const focused = document.activeElement;
-    const choice = activeReactionChoice && choices.includes(activeReactionChoice)
-      ? activeReactionChoice
-      : choices.find((candidate) => candidate === focused || candidate.contains(focused)) || choices[0];
+    const choice = currentReactionChoice(choices);
     if (!(choice instanceof HTMLElement) || !triggerMouse(choice)) {
       flash("No reaction choice is selected");
       return;
@@ -1314,7 +1365,7 @@
     }
 
     const nextChoices = reactionChoices(nextPicker);
-    const nextChoice = nextChoices.includes(choice) ? choice : nextChoices[0];
+    const nextChoice = currentReactionChoice(nextChoices);
     if (nextChoice) focusReactionChoice(nextChoice);
   }
 
