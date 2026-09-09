@@ -21,7 +21,8 @@ by WhatsApp or Meta.
 
 Insert mode now adds a subtle border around the active chat composer. Escape
 returns to the selected message after cancelling a reply, and rapid chat
-navigation avoids stale commands reclaiming a newer context.
+navigation avoids stale commands reclaiming a newer context. Reaction keyboard
+navigation now preserves the selected emoji when WhatsApp refreshes the picker.
 
 ## Single purpose, site access, and privacy disclosure
 
