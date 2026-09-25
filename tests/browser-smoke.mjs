@@ -494,10 +494,11 @@ await evaluate(`(() => {
     }, 40);
   }
 
-  function toggleReactionPicker() {
+  function toggleReactionPicker(source) {
     const existing = document.querySelector("#test-reaction-picker");
     if (existing) {
       existing.remove();
+      source?.setAttribute("aria-expanded", "false");
       return;
     }
     const dialog = document.createElement("div");
@@ -518,7 +519,22 @@ await evaluate(`(() => {
       grid.append(choice);
     }
     dialog.append(grid);
-    document.body.append(dialog);
+    const attach = () => {
+      if (!document.querySelector("#test-reaction-picker")) {
+        document.body.append(dialog);
+        source?.setAttribute("aria-controls", dialog.id);
+        source?.setAttribute("aria-expanded", "true");
+      }
+    };
+    if (fixture.dataset.holdReactionPicker === "true") {
+      fixture.dataset.reactionPickerHeld = "true";
+      globalThis.__whatsvimReleaseHeldReactionPicker = () => {
+        fixture.dataset.reactionPickerReleased = "true";
+        attach();
+      };
+    } else {
+      attach();
+    }
   }
 
   function openMessageMenu(container) {
@@ -561,13 +577,33 @@ await evaluate(`(() => {
     }
   }
 
+  function applyRevealIdentityGate(container) {
+    const row = container.closest('[role="row"]');
+    const gate = fixture.dataset.revealIdentityGate;
+    if (!(row instanceof HTMLElement) || !gate) return;
+    fixture.dataset.revealIdentityGate = "";
+    if (gate === "recycle") row.querySelector("[data-id]")?.setAttribute("data-id", "recycled-during-reveal");
+    if (gate === "outside-root") {
+      globalThis.__whatsvimRevealRow = row;
+      document.body.append(row);
+    }
+    fixture.dataset.revealIdentityObserved = gate;
+  }
+
   for (const container of fixture.querySelectorAll('[data-testid="msg-container"]')) {
     container.addEventListener("mouseover", () => {
+      applyRevealIdentityGate(container);
       if (container.querySelector('[data-testid="icon-down-context"]')) return;
       const menu = mouseActionButton({ "data-testid": "icon-down-context", "aria-label": "Menu" }, "Menu");
       const reaction = mouseActionButton({ "data-testid": "reaction-entry-point", "aria-label": "React" }, "React");
-      menu.addEventListener("click", () => openMessageMenu(container));
-      reaction.addEventListener("click", toggleReactionPicker);
+      menu.addEventListener("click", () => {
+        fixture.dataset.menuEntryClicks = String(Number(fixture.dataset.menuEntryClicks || 0) + 1);
+        openMessageMenu(container);
+      });
+      reaction.addEventListener("click", () => toggleReactionPicker(reaction));
+      reaction.addEventListener("click", () => {
+        fixture.dataset.reactionEntryClicks = String(Number(fixture.dataset.reactionEntryClicks || 0) + 1);
+      });
       container.append(menu, reaction);
     });
   }
@@ -582,6 +618,7 @@ await evaluate(`(() => {
   });
 
   fixture.querySelector("#test-media").addEventListener("click", () => {
+    fixture.dataset.mediaActivationCount = String(Number(fixture.dataset.mediaActivationCount || 0) + 1);
     fixture.querySelector("#test-media").dataset.opened = "true";
     const viewer = document.createElement("div");
     viewer.id = "test-media-viewer";
@@ -619,7 +656,21 @@ await evaluate(`(() => {
   cancelReply.setAttribute("aria-label", "Cancel reply");
   cancelReply.style.cssText = "display:block;width:100px;height:30px";
   cancelReply.addEventListener("click", () => {
+    fixture.dataset.replyCancelActivations = String(Number(fixture.dataset.replyCancelActivations || 0) + 1);
     fixture.querySelector("#test-reply-preview").style.display = "none";
+    if (fixture.dataset.holdMessageReturnRow === "true") {
+      const row = fixture.querySelector("#message-two");
+      if (row) {
+        globalThis.__whatsvimHeldReturnRow = row;
+        row.remove();
+      }
+      globalThis.__whatsvimReleaseHeldReturnRow = () => {
+        const held = globalThis.__whatsvimHeldReturnRow;
+        if (held instanceof HTMLElement) fixture.querySelector("#test-message-list")?.insertBefore(held, fixture.querySelector("#message-media"));
+        fixture.dataset.messageReturnReleased = "true";
+      };
+      return;
+    }
     if (fixture.dataset.delayedReplyReplacement !== "true") return;
     const row = fixture.querySelector("#message-two");
     row?.remove();
@@ -1424,6 +1475,252 @@ await press({ key: "Escape", code: "Escape", virtualKeyCode: 27 });
 assert.equal(await evaluate('document.querySelector("#whatsvim-mode")?.dataset.mode'), "normal");
 assert.equal(await evaluate('document.querySelector("#whatsvim-mode")?.dataset.context'), "normal");
 
+// A. A virtual boundary must really be entered and held before a newer compose
+// command supersedes it. The spacer keeps the list scrollable after media is
+// virtualized, while scrollBy withholds the new keyed row until release.
+await evaluate('document.querySelector("#test-reaction-picker")?.remove()');
+await press({ key: "l", code: "KeyL", virtualKeyCode: 76, text: "l" });
+await waitFor('document.querySelector("#whatsvim-mode")?.dataset.pane === "message"');
+await press({ key: "k", code: "KeyK", virtualKeyCode: 75, text: "k" });
+await waitFor('document.querySelector("#whatsvim-mode")?.dataset.context === "message"');
+await evaluate('document.querySelector("#message-two")?.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, composed: true }))');
+assert.equal(await evaluate('document.querySelector("#message-two")?.classList.contains("whatsvim-selected-message")'), true);
+// Resolve any selection retained by the preceding reaction fixture before
+// taking the boundary snapshot used by this race.
+await press({ key: "j", code: "KeyJ", virtualKeyCode: 74, text: "j" });
+await waitFor('document.querySelector("#message-media")?.classList.contains("whatsvim-selected-message")');
+await press({ key: "k", code: "KeyK", virtualKeyCode: 75, text: "k" });
+await waitFor('document.querySelector("#message-two")?.classList.contains("whatsvim-selected-message")');
+await evaluate(`(() => {
+  const fixture = document.querySelector("#whatsvim-test-fixture");
+  const list = document.querySelector("#test-message-list");
+  const spacer = document.createElement("div");
+  spacer.id = "test-message-navigation-spacer";
+  spacer.style.height = "400px";
+  globalThis.__whatsvimHeldMediaRow = document.querySelector("#message-media");
+  globalThis.__whatsvimHeldMediaRow?.remove();
+  list.append(spacer);
+  fixture.dataset.messageNavigationScrollAcknowledged = "";
+  fixture.dataset.messageNavigationReleased = "";
+  const acknowledgeBoundaryScroll = () => { fixture.dataset.messageNavigationScrollAcknowledged = "true"; };
+  list.addEventListener("scroll", acknowledgeBoundaryScroll);
+  globalThis.__whatsvimReleaseMessageNavigation = () => {
+    list.insertBefore(globalThis.__whatsvimHeldMediaRow, spacer);
+    fixture.dataset.messageNavigationReleased = "true";
+    list.dispatchEvent(new Event("scroll"));
+    requestAnimationFrame(() => { fixture.dataset.messageNavigationReleaseFrame = "true"; });
+  };
+  globalThis.__whatsvimRestoreMessageNavigation = () => {
+    list.removeEventListener("scroll", acknowledgeBoundaryScroll);
+    delete globalThis.__whatsvimReleaseMessageNavigation;
+    delete globalThis.__whatsvimRestoreMessageNavigation;
+  };
+})()`);
+assert.ok(await evaluate('document.querySelector("#test-message-list").scrollHeight > document.querySelector("#test-message-list").clientHeight'));
+assert.deepEqual(await evaluate('[...document.querySelectorAll("#test-message-list > [role=row]")].map((row) => row.id)'), ["message-one", "message-two"]);
+assert.equal(await evaluate('document.querySelector("#whatsvim-mode")?.dataset.context'), "message");
+await press({ key: "j", code: "KeyJ", virtualKeyCode: 74, text: "j" });
+await waitFor('document.querySelector("#whatsvim-test-fixture")?.dataset.messageNavigationScrollAcknowledged === "true"', 1000);
+await tapWithoutDelay({ key: "i", code: "KeyI", virtualKeyCode: 73, text: "i" });
+await waitFor('document.activeElement?.id === "test-composer" && document.querySelector("#whatsvim-mode")?.dataset.mode === "insert"');
+await evaluate('globalThis.__whatsvimReleaseMessageNavigation()');
+await waitFor('document.querySelector("#whatsvim-test-fixture")?.dataset.messageNavigationReleaseFrame === "true"', 1000);
+assert.equal(await evaluate('document.querySelector("#message-two")?.classList.contains("whatsvim-selected-message")'), true);
+assert.equal(await evaluate('document.activeElement?.id'), "test-composer");
+assert.equal(await evaluate('document.querySelector("#whatsvim-mode")?.dataset.mode'), "insert");
+assert.equal(await evaluate('document.querySelector("#whatsvim-mode")?.dataset.pane'), "message");
+await evaluate(`(() => {
+  document.querySelector("#test-message-navigation-spacer")?.remove();
+  delete globalThis.__whatsvimHeldMediaRow;
+  globalThis.__whatsvimRestoreMessageNavigation();
+})()`);
+await press({ key: "Escape", code: "Escape", virtualKeyCode: 27 });
+
+// B. Compose-at-latest must wait on the actual boundary predicate, not merely
+// a timer, and a newer composer command owns focus while it remains held.
+assert.equal(await evaluate('document.querySelector("#whatsvim-mode")?.dataset.context'), "message");
+assert.equal(await evaluate('document.querySelector("#message-two")?.classList.contains("whatsvim-selected-message")'), true);
+await evaluate(`(() => {
+  const fixture = document.querySelector("#whatsvim-test-fixture");
+  const list = document.querySelector("#test-message-list");
+  const gate = { released: false };
+  fixture.dataset.latestBoundaryScrollAcknowledged = "";
+  fixture.dataset.latestBoundaryHeld = "";
+  const holdBoundary = () => {
+    fixture.dataset.latestBoundaryScrollAcknowledged = "true";
+    if (!gate.released) {
+      list.scrollTop = 0;
+      fixture.dataset.latestBoundaryHeld = "true";
+    }
+  };
+  list.scrollTop = 0;
+  list.addEventListener("scroll", holdBoundary);
+  globalThis.__whatsvimReleaseLatestBoundary = () => {
+    gate.released = true;
+    fixture.dataset.latestBoundaryReleased = "true";
+    list.scrollTop = list.scrollHeight;
+    list.dispatchEvent(new Event("scroll"));
+    requestAnimationFrame(() => { fixture.dataset.latestBoundaryReleaseFrame = "true"; });
+  };
+  globalThis.__whatsvimRestoreLatestBoundary = () => {
+    list.removeEventListener("scroll", holdBoundary);
+    delete globalThis.__whatsvimReleaseLatestBoundary;
+    delete globalThis.__whatsvimRestoreLatestBoundary;
+  };
+})()`);
+await tapWithoutDelay({ key: "I", code: "KeyI", virtualKeyCode: 73, modifiers: 8, text: "I" });
+await waitFor('document.querySelector("#whatsvim-test-fixture")?.dataset.latestBoundaryScrollAcknowledged === "true"', 1000);
+await waitFor('document.querySelector("#whatsvim-test-fixture")?.dataset.latestBoundaryHeld === "true" && document.querySelector("#test-message-list")?.scrollTop === 0', 1000);
+await tapWithoutDelay({ key: "i", code: "KeyI", virtualKeyCode: 73, text: "i" });
+await waitFor('document.activeElement?.id === "test-composer" && document.querySelector("#whatsvim-mode")?.dataset.mode === "insert"');
+await evaluate('globalThis.__whatsvimReleaseLatestBoundary()');
+await waitFor('document.querySelector("#whatsvim-test-fixture")?.dataset.latestBoundaryReleaseFrame === "true"', 1000);
+assert.equal(await evaluate('document.querySelector("#message-two")?.classList.contains("whatsvim-selected-message")'), true);
+assert.equal(await evaluate('document.activeElement?.id'), "test-composer");
+assert.equal(await evaluate('document.querySelector("#whatsvim-mode")?.dataset.mode'), "insert");
+assert.equal(await evaluate('document.querySelector("#whatsvim-mode")?.dataset.pane'), "message");
+await evaluate('globalThis.__whatsvimRestoreLatestBoundary()');
+await press({ key: "Escape", code: "Escape", virtualKeyCode: 27 });
+
+// C. A keyed composer return is held after its real reply-cancel phase. A
+// keyboard navigation command advances command intent without changing the
+// return serial, so the released old restore cannot reclaim its selection.
+assert.equal(await evaluate('document.querySelector("#whatsvim-mode")?.dataset.context'), "message");
+assert.equal(await evaluate('document.querySelector("#message-two")?.classList.contains("whatsvim-selected-message")'), true);
+await evaluate(`(() => {
+  const fixture = document.querySelector("#whatsvim-test-fixture");
+  fixture.dataset.holdMessageReturnRow = "true";
+  fixture.dataset.replyCancelActivations = "0";
+  fixture.dataset.messageReturnReleased = "";
+})()`);
+await press({ key: "r", code: "KeyR", virtualKeyCode: 82, text: "r" });
+await waitFor('document.activeElement?.id === "test-composer" && getComputedStyle(document.querySelector("#test-reply-preview")).display === "block"');
+await tapWithoutDelay({ key: "Escape", code: "Escape", virtualKeyCode: 27 });
+await waitFor('document.querySelector("#whatsvim-test-fixture")?.dataset.replyCancelActivations === "1"', 1000);
+await waitFor('document.activeElement?.id !== "test-composer" && !document.querySelector("#message-two")', 1000);
+await tapWithoutDelay({ key: "j", code: "KeyJ", virtualKeyCode: 74, text: "j" });
+await waitFor('document.querySelector("#message-media")?.classList.contains("whatsvim-selected-message")', 1000);
+await evaluate(`globalThis.__whatsvimReleaseHeldReturnRow(); requestAnimationFrame(() => {
+  document.querySelector("#whatsvim-test-fixture").dataset.messageReturnReleaseFrame = "true";
+})`);
+await waitFor('document.querySelector("#whatsvim-test-fixture")?.dataset.messageReturnReleaseFrame === "true"', 1000);
+assert.equal(await evaluate('document.activeElement?.id'), "whatsvim-sentinel");
+assert.equal(await evaluate('document.querySelector("#whatsvim-mode")?.dataset.mode'), "normal");
+assert.equal(await evaluate('document.querySelector("#whatsvim-mode")?.dataset.pane'), "message");
+assert.equal(await evaluate('document.querySelector("#message-media")?.classList.contains("whatsvim-selected-message")'), true);
+assert.equal(await evaluate('document.querySelector("#message-two")?.classList.contains("whatsvim-selected-message")'), false);
+await evaluate(`(() => {
+  const fixture = document.querySelector("#whatsvim-test-fixture");
+  fixture.dataset.holdMessageReturnRow = "false";
+  delete globalThis.__whatsvimHeldReturnRow;
+  delete globalThis.__whatsvimReleaseHeldReturnRow;
+})()`);
+
+// D. The reveal continuation must reject both an A-to-B recycled row and an A
+// row moved to a connected location outside #main. The toast is emitted only
+// after revealMessageControls resumes; neither case is an Escape cancellation.
+await evaluate('document.querySelector("#test-neutral")?.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, composed: true }))');
+await press({ key: "l", code: "KeyL", virtualKeyCode: 76, text: "l" });
+await waitFor('document.querySelector("#whatsvim-mode")?.dataset.pane === "message"');
+await press({ key: "k", code: "KeyK", virtualKeyCode: 75, text: "k" });
+await waitFor('document.querySelector("#whatsvim-mode")?.dataset.context === "message"');
+await evaluate('document.querySelector("#message-two")?.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, composed: true }))');
+assert.equal(await evaluate('document.querySelector("#message-two")?.classList.contains("whatsvim-selected-message")'), true);
+await evaluate(`(() => {
+  const fixture = document.querySelector("#whatsvim-test-fixture");
+  fixture.dataset.reactionEntryClicks = "0";
+  fixture.dataset.menuEntryClicks = "0";
+  fixture.dataset.mediaActivationCount = "0";
+  fixture.dataset.revealIdentityGate = "recycle";
+  fixture.dataset.revealIdentityObserved = "";
+  document.querySelectorAll("#message-two [data-testid='icon-down-context'], #message-two [data-testid='reaction-entry-point']").forEach((control) => control.remove());
+  document.querySelector("#whatsvim-toast").textContent = "";
+})()`);
+await press({ key: "R", code: "KeyR", virtualKeyCode: 82, modifiers: 8, text: "R" });
+await waitFor('document.querySelector("#whatsvim-test-fixture")?.dataset.revealIdentityObserved === "recycle"', 1000);
+await waitFor('document.querySelector("#whatsvim-toast")?.textContent === "Select a message first"', 1000);
+assert.equal(await evaluate('document.querySelector("#whatsvim-test-fixture")?.dataset.reactionEntryClicks'), "0");
+assert.equal(await evaluate('document.querySelector("#whatsvim-test-fixture")?.dataset.menuEntryClicks'), "0");
+assert.equal(await evaluate('document.querySelector("#whatsvim-test-fixture")?.dataset.mediaActivationCount'), "0");
+assert.equal(await evaluate('document.querySelector(".whatsvim-selected-message")'), null);
+await evaluate('document.querySelector("#message-two [data-id]")?.setAttribute("data-id", "message-two")');
+await press({ key: "l", code: "KeyL", virtualKeyCode: 76, text: "l" });
+await waitFor('document.querySelector("#whatsvim-mode")?.dataset.pane === "message"');
+await press({ key: "k", code: "KeyK", virtualKeyCode: 75, text: "k" });
+await waitFor('document.querySelector("#whatsvim-mode")?.dataset.context === "message"');
+await evaluate('document.querySelector("#message-two")?.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, composed: true }))');
+await evaluate(`(() => {
+  const fixture = document.querySelector("#whatsvim-test-fixture");
+  fixture.dataset.reactionEntryClicks = "0";
+  fixture.dataset.menuEntryClicks = "0";
+  fixture.dataset.mediaActivationCount = "0";
+  fixture.dataset.revealIdentityGate = "outside-root";
+  fixture.dataset.revealIdentityObserved = "";
+  document.querySelectorAll("#message-two [data-testid='icon-down-context'], #message-two [data-testid='reaction-entry-point']").forEach((control) => control.remove());
+  document.querySelector("#whatsvim-toast").textContent = "";
+})()`);
+await tapWithoutDelay({ key: "R", code: "KeyR", virtualKeyCode: 82, modifiers: 8, text: "R" });
+await waitFor('document.querySelector("#whatsvim-test-fixture")?.dataset.revealIdentityObserved === "outside-root"', 1000);
+await waitFor('document.querySelector("#whatsvim-toast")?.textContent === "Select a message first"', 1000);
+assert.equal(await evaluate('document.querySelector("#message-two")?.isConnected && !document.querySelector("#main")?.contains(document.querySelector("#message-two"))'), true);
+assert.equal(await evaluate('document.querySelector("#whatsvim-test-fixture")?.dataset.reactionEntryClicks'), "0");
+assert.equal(await evaluate('document.querySelector("#whatsvim-test-fixture")?.dataset.menuEntryClicks'), "0");
+assert.equal(await evaluate('document.querySelector("#whatsvim-test-fixture")?.dataset.mediaActivationCount'), "0");
+assert.equal(await evaluate('document.querySelector(".whatsvim-selected-message")'), null);
+await evaluate(`(() => {
+  const list = document.querySelector("#test-message-list");
+  list?.insertBefore(globalThis.__whatsvimRevealRow, document.querySelector("#message-media"));
+  delete globalThis.__whatsvimRevealRow;
+})()`);
+await press({ key: "Escape", code: "Escape", virtualKeyCode: 27 });
+
+// E. Hold the old direct picker until after a newer command selects B. An
+// unrelated picker has a different id and B relation, so stale cleanup must
+// neither close it nor click A's entry point a second time.
+await press({ key: "l", code: "KeyL", virtualKeyCode: 76, text: "l" });
+await waitFor('document.querySelector("#whatsvim-mode")?.dataset.pane === "message"');
+await press({ key: "k", code: "KeyK", virtualKeyCode: 75, text: "k" });
+await waitFor('document.querySelector("#whatsvim-mode")?.dataset.context === "message"');
+await evaluate(`(() => {
+  const fixture = document.querySelector("#whatsvim-test-fixture");
+  fixture.dataset.holdReactionPicker = "true";
+  fixture.dataset.reactionPickerHeld = "";
+  fixture.dataset.reactionPickerReleased = "";
+  fixture.dataset.reactionEntryClicks = "0";
+})()`);
+await tapWithoutDelay({ key: "R", code: "KeyR", virtualKeyCode: 82, modifiers: 8, text: "R" });
+await waitFor('document.querySelector("#whatsvim-test-fixture")?.dataset.reactionEntryClicks === "1"', 1000);
+await waitFor('document.querySelector("#whatsvim-test-fixture")?.dataset.reactionPickerHeld === "true"', 1000);
+await tapWithoutDelay({ key: "j", code: "KeyJ", virtualKeyCode: 74, text: "j" });
+await waitFor('document.querySelector("#message-media")?.classList.contains("whatsvim-selected-message")', 1000);
+await evaluate(`(() => {
+  const media = document.querySelector("#message-media [data-testid='msg-container']");
+  media?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, cancelable: true, composed: true }));
+  const newerEntry = document.querySelector("#message-media [data-testid='reaction-entry-point']");
+  const newer = document.createElement("div");
+  newer.id = "test-unrelated-reaction-picker";
+  newer.setAttribute("role", "dialog");
+  newer.innerHTML = '<div role="grid"><button aria-label="Newer reaction">newer</button></div>';
+  document.body.append(newer);
+  newerEntry?.setAttribute("aria-controls", newer.id);
+  newerEntry?.setAttribute("aria-expanded", "true");
+  requestAnimationFrame(() => { document.querySelector("#whatsvim-test-fixture").dataset.unrelatedReactionPickerObserved = "true"; });
+})()`);
+await waitFor('document.querySelector("#whatsvim-test-fixture")?.dataset.unrelatedReactionPickerObserved === "true"', 1000);
+await evaluate('globalThis.__whatsvimReleaseHeldReactionPicker()');
+await waitFor('document.querySelector("#whatsvim-test-fixture")?.dataset.reactionPickerReleased === "true"', 1000);
+await waitFor('document.querySelector("#test-reaction-picker") !== null', 1000);
+assert.equal(await evaluate('document.querySelector("#whatsvim-test-fixture")?.dataset.reactionEntryClicks'), "1");
+assert.equal(await evaluate('document.querySelector("#test-unrelated-reaction-picker") !== null'), true);
+assert.equal(await evaluate('document.querySelector("#message-media")?.classList.contains("whatsvim-selected-message")'), true);
+await evaluate(`(() => {
+  const fixture = document.querySelector("#whatsvim-test-fixture");
+  document.querySelector("#test-reaction-picker")?.remove();
+  document.querySelector("#test-unrelated-reaction-picker")?.remove();
+  fixture.dataset.holdReactionPicker = "false";
+  delete globalThis.__whatsvimReleaseHeldReactionPicker;
+})()`);
+
 await press({ key: "k", code: "KeyK", virtualKeyCode: 75, text: "k" });
 await evaluate(`document.querySelector("#test-neutral")?.dispatchEvent(new PointerEvent("pointerup", {
   bubbles: true,
@@ -1486,6 +1783,135 @@ assert.equal(await evaluate('document.querySelector("#whatsvim-mode")?.dataset.c
 assert.equal(await evaluate('getComputedStyle(document.querySelector("#test-reply-preview")).display'), "none");
 assert.equal(await evaluate('document.querySelector("#whatsvim-test-fixture")?.dataset.hostEscapeCount'), "0");
 assert.equal(await evaluate('getComputedStyle(document.querySelector("#main")).display'), "block");
+
+// A connected virtual row may be recycled for a different message while a
+// composer is open. Returning from Insert mode must not restore that new
+// message merely because the old row object is still connected.
+await press({ key: "i", code: "KeyI", virtualKeyCode: 73, text: "i" });
+await waitFor('document.querySelector("#whatsvim-mode")?.dataset.mode === "insert"');
+await evaluate('document.querySelector("#message-two-replacement > [data-id]")?.setAttribute("data-id", "message-two-recycled")');
+await press({ key: "Escape", code: "Escape", virtualKeyCode: 27 });
+await waitFor('document.querySelector("#whatsvim-mode")?.dataset.context === "message"', 1200);
+assert.equal(await evaluate('document.querySelector("#message-two-replacement")?.classList.contains("whatsvim-selected-message")'), false);
+assert.equal(await evaluate('document.querySelector("#message-two-replacement")?.getAttribute("aria-current")'), "true");
+
+// The same identity check applies to a media return after the viewer closes.
+await evaluate(`document.querySelector("#message-media")?.dispatchEvent(new PointerEvent("pointerup", {
+  bubbles: true,
+  cancelable: true,
+  composed: true,
+}))`);
+assert.equal(await evaluate('document.querySelector("#message-media")?.classList.contains("whatsvim-selected-message")'), true);
+await press({ key: "l", code: "KeyL", virtualKeyCode: 76, text: "l" });
+await waitFor('document.querySelector("#test-media-viewer") !== null');
+await evaluate('document.querySelector("#message-media > [data-id]")?.setAttribute("data-id", "message-media-recycled")');
+await press({ key: "Escape", code: "Escape", virtualKeyCode: 27 });
+await waitFor('document.querySelector("#test-media-viewer") === null');
+assert.equal(await evaluate('document.querySelector("#message-media")?.classList.contains("whatsvim-selected-message")'), false);
+assert.equal(await evaluate('document.querySelector("#message-media")?.getAttribute("aria-current")'), "true");
+
+// WhatsApp can place the message identity on the virtual row itself. Resolve a
+// remounted row by that key, then reject both a recycled and an out-of-root
+// connected row without leaving WhatsVim selection attributes behind.
+await evaluate(`(() => {
+  const row = document.createElement("div");
+  row.id = "message-row-level-a";
+  row.setAttribute("role", "row");
+  row.setAttribute("data-id", "row-level-a");
+  row.innerHTML = '<div data-testid="msg-container">Row-level A</div>';
+  document.querySelector("#test-message-list")?.append(row);
+  row.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, composed: true }));
+})()`);
+assert.equal(await evaluate('document.querySelector("#message-row-level-a")?.classList.contains("whatsvim-selected-message")'), true);
+// A virtual list can recycle X from A to B and mount Y as A in one update.
+// Resolving the saved A must clear X through keyed ownership cleanup before it
+// decorates Y; X's new host ARIA value is not ours to restore or remove.
+await evaluate(`(() => {
+  const list = document.querySelector("#test-message-list");
+  const x = document.querySelector("#message-row-level-a");
+  x?.setAttribute("data-id", "row-level-b");
+  x?.setAttribute("aria-current", "page");
+  const y = document.createElement("div");
+  y.id = "message-row-level-a-replacement";
+  y.setAttribute("role", "row");
+  y.setAttribute("data-id", "row-level-a");
+  y.innerHTML = '<div data-testid="msg-container">Row-level A replacement</div>';
+  list?.append(y);
+})()`);
+await press({ key: " ", code: "Space", virtualKeyCode: 32, text: " " });
+assert.equal(await evaluate('document.querySelectorAll(".whatsvim-selected-message").length'), 1);
+assert.equal(await evaluate('document.querySelector("#message-row-level-a")?.classList.contains("whatsvim-selected-message")'), false);
+assert.equal(await evaluate('document.querySelector("#message-row-level-a-replacement")?.classList.contains("whatsvim-selected-message")'), true);
+assert.equal(await evaluate('document.querySelector("#message-row-level-a-replacement")?.getAttribute("aria-current")'), "true");
+assert.equal(await evaluate('document.querySelector("#message-row-level-a")?.getAttribute("aria-current")'), "page");
+await evaluate(`(() => {
+  document.querySelector("#message-row-level-a-replacement")?.remove();
+  const x = document.querySelector("#message-row-level-a");
+  x?.setAttribute("data-id", "row-level-a");
+  x?.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, composed: true }));
+})()`);
+assert.equal(await evaluate('document.querySelector("#message-row-level-a")?.classList.contains("whatsvim-selected-message")'), true);
+await evaluate('document.querySelector("#message-row-level-a")?.setAttribute("data-id", "row-level-b")');
+await press({ key: " ", code: "Space", virtualKeyCode: 32, text: " " });
+assert.equal(await evaluate('document.querySelector("#message-row-level-a")?.classList.contains("whatsvim-selected-message")'), false);
+assert.equal(await evaluate('document.querySelector("#message-row-level-a")?.getAttribute("aria-current")'), "true");
+// The same recycled element must redecorate when its original logical key
+// returns; this is not a remount.
+await evaluate('document.querySelector("#message-row-level-a")?.setAttribute("data-id", "row-level-a")');
+await press({ key: " ", code: "Space", virtualKeyCode: 32, text: " " });
+assert.equal(await evaluate('document.querySelector("#message-row-level-a")?.classList.contains("whatsvim-selected-message")'), true);
+assert.equal(await evaluate('document.querySelector("#message-row-level-a")?.getAttribute("aria-current")'), "true");
+await evaluate('document.querySelector("#message-row-level-a")?.setAttribute("data-id", "row-level-b")');
+await press({ key: " ", code: "Space", virtualKeyCode: 32, text: " " });
+await evaluate(`(() => {
+  const row = document.createElement("div");
+  row.id = "message-row-level-a-remount";
+  row.setAttribute("role", "row");
+  row.setAttribute("data-id", "row-level-a");
+  row.innerHTML = '<div data-testid="msg-container">Row-level A remount</div>';
+  document.querySelector("#test-message-list")?.append(row);
+})()`);
+await press({ key: "j", code: "KeyJ", virtualKeyCode: 74, text: "j" });
+assert.equal(await evaluate('document.querySelector("#message-row-level-a-remount")?.classList.contains("whatsvim-selected-message")'), true);
+await evaluate('document.body.append(document.querySelector("#message-row-level-a-remount"))');
+
+// If a recycled row receives the same aria-current value WhatsVim wrote, its
+// changed logical key makes ownership ambiguous, so preserve the host value.
+await evaluate(`(() => {
+  const row = document.createElement("div");
+  row.id = "message-host-aria-true";
+  row.setAttribute("role", "row");
+  row.setAttribute("data-id", "host-aria-a");
+  row.setAttribute("aria-current", "page");
+  row.innerHTML = '<div data-testid="msg-container">Host ARIA true</div>';
+  document.querySelector("#test-message-list")?.append(row);
+})()`);
+await press({ key: "Escape", code: "Escape", virtualKeyCode: 27 });
+await press({ key: "l", code: "KeyL", virtualKeyCode: 76, text: "l" });
+await press({ key: "k", code: "KeyK", virtualKeyCode: 75, text: "k" });
+await waitFor('document.querySelector("#whatsvim-mode")?.dataset.context === "message"');
+await evaluate('document.querySelector("#message-host-aria-true")?.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, composed: true }))');
+assert.equal(await evaluate('document.querySelector("#message-host-aria-true")?.getAttribute("aria-current")'), "true");
+await evaluate('document.querySelector("#message-host-aria-true")?.setAttribute("data-id", "host-aria-b"); document.querySelector("#message-host-aria-true")?.setAttribute("aria-current", "true")');
+await press({ key: " ", code: "Space", virtualKeyCode: 32, text: " " });
+assert.equal(await evaluate('document.querySelector("#message-host-aria-true")?.getAttribute("aria-current")'), "true");
+assert.equal(await evaluate('document.querySelector("#message-host-aria-true")?.classList.contains("whatsvim-selected-message")'), false);
+
+// With unchanged identity, deselection can safely restore the value that the
+// host exposed before WhatsVim decorated the row.
+await evaluate(`(() => {
+  const row = document.createElement("div");
+  row.id = "message-host-aria-restore";
+  row.setAttribute("role", "row");
+  row.setAttribute("data-id", "host-aria-restore");
+  row.setAttribute("aria-current", "page");
+  row.innerHTML = '<div data-testid="msg-container">Host ARIA restore</div>';
+  document.querySelector("#test-message-list")?.append(row);
+  row.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, composed: true }));
+})()`);
+assert.equal(await evaluate('document.querySelector("#message-host-aria-restore")?.getAttribute("aria-current")'), "true");
+await evaluate('document.querySelector("#test-neutral")?.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, composed: true }))');
+assert.equal(await evaluate('document.querySelector("#message-host-aria-restore")?.getAttribute("aria-current")'), "page");
 
 // Virtualized chat lists can mutate for unrelated reasons before the requested
 // edge row materializes. The observer wait must ignore that mutation, retain

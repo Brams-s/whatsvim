@@ -90,6 +90,8 @@
   let mediaRestoreSerial = 0;
   let messageOverlayKind = "";
   let messageOverlayCloseSerial = 0;
+  let reactionOpenSerial = 0;
+  const messageAriaOwnership = new WeakMap<HTMLElement, { key: string; previous: string | null; wrote: boolean }>();
   let reactionSearchFocusSerial = 0;
   let reactionSearchFocusUntil = 0;
   let normalModeLockUntil = 0;
@@ -570,6 +572,10 @@
     return intent === commandIntentGeneration;
   }
 
+  function commandStillOwns(intent: number | undefined): boolean {
+    return intent === undefined || commandIntentIsCurrent(intent);
+  }
+
   function chatNavigationIsCurrent(generation: number): boolean {
     return generation === chatNavigationGeneration;
   }
@@ -719,7 +725,7 @@
 
   function messageRow(element: EventTarget | null): HTMLElement | null {
     if (!(element instanceof Element)) return null;
-    const main = document.querySelector(whatsappSelectors.message.root);
+    const main = messageRoot();
     if (!main?.contains(element)) return null;
     const row = element.closest(whatsappSelectors.message.row);
     return row instanceof HTMLElement && main.contains(row) && row.querySelector(whatsappSelectors.message.container)
@@ -727,8 +733,12 @@
       : null;
   }
 
-  function messageRows(): HTMLElement[] {
-    const main = document.querySelector(whatsappSelectors.message.root);
+  function messageRoot(): HTMLElement | null {
+    const root = document.querySelector(whatsappSelectors.message.root);
+    return root instanceof HTMLElement ? root : null;
+  }
+
+  function messageRows(main = messageRoot()): HTMLElement[] {
     if (!main) return [];
     return uniqueOutermost(
       [...main.querySelectorAll(whatsappSelectors.message.row)]
@@ -745,16 +755,76 @@
 
   function messageKey(row: Element | null | undefined): string {
     if (!(row instanceof Element)) return "";
+    const ownKey = row.getAttribute("data-id") || row.getAttribute("data-testid");
+    if (ownKey && (row.hasAttribute("data-id") || ownKey.startsWith("conv-msg-"))) return ownKey;
     const root = row.querySelector('[data-id], [data-testid^="conv-msg-"]');
     return root?.getAttribute("data-id") || root?.getAttribute("data-testid") || "";
+  }
+
+  function isCurrentMessageRow(row: HTMLElement | null | undefined, main = messageRoot()): row is HTMLElement {
+    return Boolean(row && main?.contains(row) && messageContainer(row));
+  }
+
+  function clearMessageRowDecoration(row: HTMLElement | null | undefined) {
+    if (!row?.classList.contains(selectedMessageClass)) return;
+    row.classList.remove(selectedMessageClass);
+    const ownership = messageAriaOwnership.get(row);
+    messageAriaOwnership.delete(row);
+    // Recycling invalidates ARIA ownership: a host can write the same "true"
+    // value after WhatsVim did, and that is indistinguishable without risking
+    // deletion of host state. Preserve it rather than guessing.
+    if (ownership?.wrote && ownership.key === messageKey(row) && row.getAttribute("aria-current") === "true") {
+      if (ownership.previous === null) row.removeAttribute("aria-current");
+      else row.setAttribute("aria-current", ownership.previous);
+    }
+  }
+
+  function decorateMessageRow(row: HTMLElement) {
+    if (!row.classList.contains(selectedMessageClass)) row.classList.add(selectedMessageClass);
+    const key = messageKey(row);
+    const existing = messageAriaOwnership.get(row);
+    if (existing?.key === key) return;
+    // The same physical row may now represent another message. Do not restore
+    // the old value: the current ARIA value may have been written by the host.
+    if (existing) messageAriaOwnership.delete(row);
+    const previous = row.getAttribute("aria-current");
+    const wrote = previous !== "true";
+    if (wrote) row.setAttribute("aria-current", "true");
+    messageAriaOwnership.set(row, { key, previous, wrote });
+  }
+
+  // A connected DOM node can be recycled by WhatsApp's virtual list. A saved
+  // key is therefore authoritative: only use the old node when it still has
+  // that key, otherwise locate the keyed message in the current #main root.
+  function findSavedMessageRow(row: HTMLElement | null | undefined, key: string): HTMLElement | null {
+    const main = messageRoot();
+    if (isCurrentMessageRow(row, main) && (!key || messageKey(row) === key)) return row;
+    return key ? messageRows(main).find((candidate) => messageKey(candidate) === key) || null : null;
+  }
+
+  function resolveSavedMessageRow(row: HTMLElement | null | undefined, key: string): HTMLElement | null {
+    const match = findSavedMessageRow(row, key);
+    if (row && key && match !== row) clearMessageRowDecoration(row);
+    return match;
+  }
+
+  function resolveMessageControlTarget(row: HTMLElement | null, key: string): { row: HTMLElement; message: HTMLElement } | null {
+    const current = resolveSavedMessageRow(row, key);
+    const message = messageContainer(current);
+    return current && message ? { row: current, message } : null;
+  }
+
+  function findSavedMessageControlTarget(row: HTMLElement | null, key: string): { row: HTMLElement; message: HTMLElement } | null {
+    const current = findSavedMessageRow(row, key);
+    const message = messageContainer(current);
+    return current && message ? { row: current, message } : null;
   }
 
   function clearMessageSelection() {
     clearReactionFocus();
     clearMediaReturn();
     document.querySelectorAll(`.${selectedMessageClass}`).forEach((row) => {
-      row.classList.remove(selectedMessageClass);
-      row.removeAttribute("aria-current");
+      if (row instanceof HTMLElement) clearMessageRowDecoration(row);
     });
     activeMessageRow = null;
     activeMessageKey = "";
@@ -783,18 +853,16 @@
   }
 
   function selectMessage(row: HTMLElement | null | undefined, options: SelectionOptions = {}) {
-    if (!(row instanceof HTMLElement) || !messageContainer(row)) return false;
+    if (!isCurrentMessageRow(row)) return false;
 
     document.querySelectorAll(`.${selectedMessageClass}`).forEach((selected) => {
       if (selected !== row) {
-        selected.classList.remove(selectedMessageClass);
-        selected.removeAttribute("aria-current");
+        if (selected instanceof HTMLElement) clearMessageRowDecoration(selected);
       }
     });
     activeMessageRow = row;
     activeMessageKey = messageKey(row);
-    row.classList.add(selectedMessageClass);
-    row.setAttribute("aria-current", "true");
+    decorateMessageRow(row);
     if (options.scroll !== false) row.scrollIntoView({ block: "center", inline: "nearest" });
     setActivePane("message", { announce: false });
     if (options.mode !== false) keepMessageFocus();
@@ -802,17 +870,11 @@
   }
 
   function selectedMessageRow() {
-    if (activeMessageRow?.isConnected && messageContainer(activeMessageRow)) return activeMessageRow;
-    if (activeMessageKey) {
-      const match = messageRows().find((row) => messageKey(row) === activeMessageKey);
-      if (match) {
-        activeMessageRow = match;
-        match.classList.add(selectedMessageClass);
-        match.setAttribute("aria-current", "true");
-        return match;
-      }
-    }
-    return null;
+    const match = resolveSavedMessageRow(activeMessageRow, activeMessageKey);
+    if (!match) return null;
+    if (match !== activeMessageRow) activeMessageRow = match;
+    decorateMessageRow(match);
+    return match;
   }
 
   function enterMessageMode() {
@@ -915,21 +977,25 @@
     return waitForPredicate(read, { timeout, poll: true });
   }
 
-  async function navigateMessage(direction: number): Promise<void> {
-    if (reactionPicker()) await closeReactionPicker();
+  async function navigateMessage(direction: number, intent: number): Promise<void> {
+    if (!commandIntentIsCurrent(intent)) return;
+    if (reactionPicker()) await closeReactionPicker(intent);
+    if (!commandIntentIsCurrent(intent)) return;
 
     let rows = messageRows();
     let current = selectedMessageRow();
     if (!current) {
       const latest = rows.at(-1);
-      if (latest && selectMessage(latest)) return;
+      if (commandIntentIsCurrent(intent) && latest && selectMessage(latest)) return;
+      if (!commandIntentIsCurrent(intent)) return;
       flash("No messages are available");
       return;
     }
 
     let index = rows.indexOf(current);
     let target: HTMLElement | null | undefined = index >= 0 ? rows[index + direction] : null;
-    if (target && selectMessage(target)) return;
+    if (commandIntentIsCurrent(intent) && target && selectMessage(target)) return;
+    if (!commandIntentIsCurrent(intent)) return;
 
     const key = activeMessageKey;
     const scroller = messageScroller(current);
@@ -943,6 +1009,7 @@
           return candidateKey && candidateKey !== key && !renderedKeys.has(candidateKey);
         }) ? true : null;
       }, { root: scroller, timeout: 700, poll: true });
+      if (!commandIntentIsCurrent(intent)) return;
       rows = messageRows();
       index = rows.findIndex((row) => messageKey(row) === key);
       target = index >= 0
@@ -950,11 +1017,12 @@
         : direction < 0
           ? rows.at(-1)
           : rows[0];
-      if (target && messageKey(target) !== key && selectMessage(target)) return;
+      if (commandIntentIsCurrent(intent) && target && messageKey(target) !== key && selectMessage(target)) return;
     }
 
+    if (!commandIntentIsCurrent(intent)) return;
     flash(direction > 0 ? "Newest message reached" : "Oldest loaded message reached");
-    focusSentinel();
+    if (commandIntentIsCurrent(intent)) focusSentinel();
   }
 
   function mouseEventInit(element: Element): MouseInit {
@@ -1009,9 +1077,11 @@
     normalModeLockUntil = 0;
     messageModeLockUntil = performance.now() + 1100;
     const row = selectedMessageRow();
-    const message = await revealMessageControls(row);
+    const key = messageKey(row);
+    await revealMessageControls(row);
     if (!commandIntentIsCurrent(intent)) return false;
-    const menuButton = message?.querySelector('[data-testid="icon-down-context"]');
+    const target = resolveMessageControlTarget(row, key);
+    const menuButton = target?.message.querySelector('[data-testid="icon-down-context"]');
     if (!(menuButton instanceof HTMLElement) || !triggerMouse(menuButton)) {
       flash("Message actions are not available");
       keepMessageFocus();
@@ -1021,7 +1091,7 @@
     const item = await waitForValue(() => visibleMenuItem(action));
     if (!commandIntentIsCurrent(intent)) return false;
     if (!item) {
-      triggerMouse(menuButton);
+      if (resolveMessageControlTarget(row, key)?.message.contains(menuButton)) triggerMouse(menuButton);
       flash(unavailableMessage);
       keepMessageFocus();
       return false;
@@ -1029,6 +1099,7 @@
 
     messageModeLockUntil = 0;
     if (!commandIntentIsCurrent(intent)) return false;
+    if (!resolveMessageControlTarget(row, key)) return false;
     triggerMouse(item);
     return true;
   }
@@ -1330,7 +1401,8 @@
     if (target) focusReactionChoice(target);
   }
 
-  async function chooseFocusedReaction() {
+  async function chooseFocusedReaction(intent: number) {
+    if (!commandIntentIsCurrent(intent)) return;
     const picker = reactionPicker();
     const choices = reactionChoices(picker);
     const choice = currentReactionChoice(choices);
@@ -1350,6 +1422,7 @@
       const search = reactionSearchEditor(nextPicker);
       return search ? { picker: nextPicker, search } : null;
     }, 650);
+    if (!commandIntentIsCurrent(intent)) return;
     if (outcome?.search) {
       focusReactionSearch(outcome.picker);
       flash("Type to search; Esc enters the emoji grid; / returns to search");
@@ -1369,37 +1442,81 @@
     if (nextChoice) focusReactionChoice(nextChoice);
   }
 
-  async function closeReactionPicker() {
+  async function closeReactionPicker(intent?: number) {
+    if (!commandStillOwns(intent)) return;
+    reactionOpenSerial += 1;
     const closeSerial = ++messageOverlayCloseSerial;
     const picker = reactionPicker();
     messageOverlayKind = "";
     cancelReactionSearchFocus();
     clearReactionFocus();
     if (!picker) {
-      keepMessageFocus();
+      if (commandStillOwns(intent)) keepMessageFocus();
       return;
     }
     const row = selectedMessageRow();
-    const message = await revealMessageControls(row);
-    const button = message?.querySelector('[data-testid="reaction-entry-point"]');
+    const key = messageKey(row);
+    await revealMessageControls(row);
+    if (!commandStillOwns(intent)) return;
+    const button = resolveMessageControlTarget(row, key)?.message.querySelector('[data-testid="reaction-entry-point"]');
     if (button instanceof HTMLElement) triggerMouse(button);
     await wait(80);
-    if (closeSerial === messageOverlayCloseSerial) keepMessageFocus();
+    if (commandStillOwns(intent) && closeSerial === messageOverlayCloseSerial) keepMessageFocus();
+  }
+
+  function dismissOwnedReactionPicker(
+    picker: Element,
+    openSerial: number,
+    entryPoint: HTMLElement | null,
+    row: HTMLElement | null,
+    key: string
+  ) {
+    const controlsId = entryPoint?.getAttribute("aria-controls");
+    if (
+      reactionOpenSerial !== openSerial ||
+      reactionPicker() !== picker ||
+      !entryPoint ||
+      !controlsId ||
+      picker.id !== controlsId ||
+      entryPoint.getAttribute("aria-expanded") !== "true"
+    ) return;
+    const current = findSavedMessageControlTarget(row, key);
+    if (!current?.message.contains(entryPoint)) return;
+    reactionOpenSerial += 1;
+    clearReactionFocus();
+    if (messageOverlayKind === "reaction") messageOverlayKind = "";
+    if (entryPoint) triggerMouse(entryPoint);
   }
 
   async function reactToSelectedMessage(intent: number) {
     const row = selectedMessageRow();
-    const message = await revealMessageControls(row);
-    if (!message) {
+    const key = messageKey(row);
+    await revealMessageControls(row);
+    if (!commandIntentIsCurrent(intent)) return;
+    const current = resolveMessageControlTarget(row, key);
+    if (!current) {
       flash("Select a message first");
       return;
     }
 
-    const direct = message.querySelector('[data-testid="reaction-entry-point"]');
-    if (direct instanceof HTMLElement) triggerMouse(direct);
-    else if (!await chooseMessageMenuAction("react", "This message cannot be reacted to", intent)) return;
+    const direct = current.message.querySelector('[data-testid="reaction-entry-point"]');
+    let openSerial = 0;
+    let entryPoint: HTMLElement | null = null;
+    if (direct instanceof HTMLElement) {
+      if (!triggerMouse(direct)) return;
+      entryPoint = direct;
+      openSerial = ++reactionOpenSerial;
+    } else {
+      if (!await chooseMessageMenuAction("react", "This message cannot be reacted to", intent)) return;
+      if (!commandIntentIsCurrent(intent)) return;
+      openSerial = ++reactionOpenSerial;
+    }
 
     const picker = await waitForValue(reactionPicker);
+    if (!commandIntentIsCurrent(intent)) {
+      if (picker) dismissOwnedReactionPicker(picker, openSerial, entryPoint, row, key);
+      return;
+    }
     if (!picker) {
       flash("WhatsApp did not open the reaction picker");
       return;
@@ -1457,18 +1574,20 @@
     if (options.intent !== undefined && !commandIntentIsCurrent(options.intent)) return false;
     const selectMessagePaneWhenUnavailable = options.selectMessagePaneWhenUnavailable === true;
     const row = selectedMessageRow();
+    const key = messageKey(row);
     captureMediaReturn(row);
-    const message = await revealMessageControls(row);
+    await revealMessageControls(row);
     if (options.intent !== undefined && !commandIntentIsCurrent(options.intent)) return false;
-    const target = message && messageMediaTarget(message);
+    const current = resolveMessageControlTarget(row, key);
+    const target = current && messageMediaTarget(current.message);
     if (!target) {
-      finishMediaClose();
+      finishMediaClose(options.intent);
       if (selectMessagePaneWhenUnavailable && options.intent !== undefined) return selectMessagePane(options.intent);
       flash("The selected message has no openable media");
       return false;
     }
     if (!triggerMouse(target)) {
-      finishMediaClose();
+      finishMediaClose(options.intent);
       if (selectMessagePaneWhenUnavailable && options.intent !== undefined) return selectMessagePane(options.intent);
       flash("The selected message has no openable media");
       return false;
@@ -1491,14 +1610,11 @@
   }
 
   function mediaReturnMessageRow() {
-    if (mediaReturnRow?.isConnected && messageContainer(mediaReturnRow)) return mediaReturnRow;
-    if (mediaReturnKey) {
-      return messageRows().find((row) => messageKey(row) === mediaReturnKey) || null;
-    }
-    return null;
+    return resolveSavedMessageRow(mediaReturnRow, mediaReturnKey);
   }
 
-  function finishMediaClose() {
+  function finishMediaClose(intent?: number) {
+    if (!commandStillOwns(intent)) return;
     messageOverlayKind = "";
     const restored = mediaReturnMessageRow() || selectedMessageRow();
     const returnKey = mediaReturnKey || messageKey(restored);
@@ -1524,6 +1640,7 @@
     if (!(scroller instanceof HTMLElement) || scrollTop === null) return;
     const restoreScroll = () => {
       if (
+        !commandStillOwns(intent) ||
         mediaRestoreSerial !== restoreSerial ||
         mode !== "message" ||
         mediaViewer() ||
@@ -1607,15 +1724,17 @@
     return true;
   }
 
-  async function navigateMediaOverlay(direction: number): Promise<boolean> {
+  async function navigateMediaOverlay(direction: number, intent?: number): Promise<boolean> {
+    if (!commandStillOwns(intent)) return false;
     normalModeLockUntil = 0;
     messageModeLockUntil = performance.now() + 500;
     messageOverlayKind = "media";
     setMode("message", { focus: false });
 
     const viewer = mediaViewer() || await waitForValue(mediaViewer, 500);
+    if (!commandStillOwns(intent)) return false;
     if (!viewer) {
-      finishMediaClose();
+      finishMediaClose(intent);
       flash("WhatsApp's media viewer is no longer open");
       return false;
     }
@@ -1625,10 +1744,11 @@
     return dispatchMediaArrow(viewer, direction);
   }
 
-  async function closeMediaOverlay() {
+  async function closeMediaOverlay(intent?: number) {
+    if (!commandStillOwns(intent)) return false;
     const viewer = mediaViewer();
     if (!viewer) {
-      finishMediaClose();
+      finishMediaClose(intent);
       return true;
     }
 
@@ -1640,6 +1760,7 @@
     }
 
     const closed = await waitForValue(() => mediaViewer() ? null : true, 700);
+    if (!commandStillOwns(intent)) return false;
     if (!closed) {
       messageOverlayKind = "media";
       flash("WhatsApp's media viewer is still open");
@@ -1647,7 +1768,7 @@
       return false;
     }
 
-    finishMediaClose();
+    finishMediaClose(intent);
     return true;
   }
 
@@ -1700,7 +1821,8 @@
     if (!focusComposer({ intent }) && commandIntentIsCurrent(intent)) clearMessageReturn();
   }
 
-  async function composeAtLatestMessage() {
+  async function composeAtLatestMessage(intent: number) {
+    if (!commandIntentIsCurrent(intent)) return;
     const rows = messageRows();
     const current = selectedMessageRow() || rows.at(-1);
     const initialScroller = messageScroller(current);
@@ -1709,26 +1831,37 @@
     // assuming a fixed render delay, then perform one bounded second pass.
     if (initialScroller) {
       initialScroller.scrollTop = initialScroller.scrollHeight;
+      // Yield once so a virtual list can commit its new rendered window before
+      // the boundary check. A later key command owns the result instead.
+      await wait(40);
+      if (!commandIntentIsCurrent(intent)) return;
       await waitForPredicate(() => (
         initialScroller.scrollTop >= initialScroller.scrollHeight - initialScroller.clientHeight - 1
       ) ? true : null, { root: initialScroller, timeout: 700, poll: true });
+      if (!commandIntentIsCurrent(intent)) return;
       const renderedLatest = messageRows().at(-1);
       const latestScroller = messageScroller(renderedLatest) || initialScroller;
       latestScroller.scrollTop = latestScroller.scrollHeight;
+      await wait(40);
+      if (!commandIntentIsCurrent(intent)) return;
       await waitForPredicate(() => (
         latestScroller.scrollTop >= latestScroller.scrollHeight - latestScroller.clientHeight - 1
       ) ? true : null, { root: latestScroller, timeout: 700, poll: true });
+      if (!commandIntentIsCurrent(intent)) return;
     }
 
     const latest = messageRows().at(-1) || current;
+    if (!commandIntentIsCurrent(intent)) return;
     if (!latest || !selectMessage(latest, { scroll: false, mode: false })) {
+      if (!commandIntentIsCurrent(intent)) return;
       clearMessageReturn();
-      focusComposer();
+      focusComposer({ intent });
       return;
     }
 
+    if (!commandIntentIsCurrent(intent)) return;
     captureMessageReturn(latest);
-    if (!focusComposer()) clearMessageReturn();
+    if (!focusComposer({ intent }) && commandIntentIsCurrent(intent)) clearMessageReturn();
   }
 
   function popupSearchEditor() {
@@ -1845,13 +1978,7 @@
   }
 
   function messageReturnRow(row: HTMLElement | null = messageModeReturnRow, key = messageModeReturnKey): HTMLElement | null {
-    if (row?.isConnected && messageContainer(row)) {
-      return row;
-    }
-    if (key) {
-      return messageRows().find((candidate) => messageKey(candidate) === key) || null;
-    }
-    return null;
+    return resolveSavedMessageRow(row, key);
   }
 
   async function cancelMessageComposerAction() {
@@ -1868,24 +1995,25 @@
     await wait(100);
   }
 
-  async function restoreMessageMode() {
+  async function restoreMessageMode(intent: number) {
+    if (!commandIntentIsCurrent(intent)) return;
     const editor = document.activeElement;
     const returnRow = messageModeReturnRow;
     const returnKey = messageModeReturnKey;
     const restoreSerial = ++messageReturnRestoreSerial;
     pendingMessageReturnRestore = restoreSerial;
     await cancelMessageComposerAction();
-    if (restoreSerial !== messageReturnRestoreSerial) {
+    if (restoreSerial !== messageReturnRestoreSerial || !commandIntentIsCurrent(intent)) {
       if (pendingMessageReturnRestore === restoreSerial) pendingMessageReturnRestore = 0;
       return;
     }
     if (isEditable(editor) && editor instanceof HTMLElement && editor.isConnected && document.activeElement === editor) editor.blur();
     const row = await waitForPredicate(() => (
-      restoreSerial === messageReturnRestoreSerial
+      restoreSerial === messageReturnRestoreSerial && commandIntentIsCurrent(intent)
         ? messageReturnRow(returnRow, returnKey)
         : null
     ), { root: document.body, timeout: 700, poll: true });
-    if (restoreSerial !== messageReturnRestoreSerial) {
+    if (restoreSerial !== messageReturnRestoreSerial || !commandIntentIsCurrent(intent)) {
       if (pendingMessageReturnRestore === restoreSerial) pendingMessageReturnRestore = 0;
       return;
     }
@@ -1895,13 +2023,19 @@
       keepMessageFocus();
       return;
     }
+    if (returnKey) {
+      clearMessageSelection();
+      setMode("message", { focus: false });
+      keepMessageFocus();
+      return;
+    }
     enterMessageMode();
     if (mode === "message") keepMessageFocus();
   }
 
-  async function leaveInsertOrClosePane() {
+  async function leaveInsertOrClosePane(intent: number) {
     if (messageModeReturnRow || messageModeReturnKey) {
-      await restoreMessageMode();
+      await restoreMessageMode(intent);
       return;
     }
 
@@ -1921,13 +2055,13 @@
     setMode("normal");
   }
 
-  async function leaveMessageModeOrCloseOverlay() {
+  async function leaveMessageModeOrCloseOverlay(intent: number) {
     if (mediaViewer() || messageOverlayKind === "media") {
-      await closeMediaOverlay();
+      await closeMediaOverlay(intent);
       return;
     }
     if (reactionPicker() || messageOverlayKind === "reaction") {
-      await closeReactionPicker();
+      await closeReactionPicker(intent);
       return;
     }
     messageOverlayCloseSerial += 1;
@@ -1965,19 +2099,19 @@
         break;
       case "escape":
         cancelChatNavigation();
-        if (mode === "message") leaveMessageModeOrCloseOverlay();
-        else leaveInsertOrClosePane();
+        if (mode === "message") leaveMessageModeOrCloseOverlay(intent);
+        else leaveInsertOrClosePane(intent);
         break;
       case "compose":
         focusComposer({ intent });
         break;
       case "next-message":
         setActivePane("message", { announce: false });
-        navigateMessage(1);
+        navigateMessage(1, intent);
         break;
       case "previous-message":
         setActivePane("message", { announce: false });
-        navigateMessage(-1);
+        navigateMessage(-1, intent);
         break;
       case "reply-message":
         replyToSelectedMessage(intent);
@@ -1989,7 +2123,7 @@
         composeFromMessageMode(intent);
         break;
       case "compose-at-latest-message":
-        composeAtLatestMessage();
+        composeAtLatestMessage(intent);
         break;
       case "react-message":
         reactToSelectedMessage(intent);
@@ -2007,16 +2141,16 @@
         moveReactionFocus("right");
         break;
       case "choose-reaction":
-        chooseFocusedReaction();
+        chooseFocusedReaction(intent);
         break;
       case "reaction-search":
         focusReactionSearch();
         break;
       case "media-previous":
-        navigateMediaOverlay(-1);
+        navigateMediaOverlay(-1, intent);
         break;
       case "media-next":
-        navigateMediaOverlay(1);
+        navigateMediaOverlay(1, intent);
         break;
       case "open-message-media":
         openSelectedMessageMedia({ intent });
@@ -2171,7 +2305,8 @@
       pendingMessageReturnRestore = 0;
     }
     const target = event.composedPath?.()[0] || event.target;
-    beginCommandIntent();
+    const intent = beginCommandIntent();
+    reactionOpenSerial += 1;
     const row = chatRow(target);
     if (row) {
       cancelChatNavigation();
@@ -2209,8 +2344,8 @@
         messageOverlayKind = "media";
         setMode("message", { focus: false });
         setTimeout(() => {
-          if (!mediaViewer() && messageOverlayKind === "media") {
-            finishMediaClose();
+          if (commandIntentIsCurrent(intent) && !mediaViewer() && messageOverlayKind === "media") {
+            finishMediaClose(intent);
           }
         }, 100);
         return;
@@ -2224,7 +2359,7 @@
       if (target.closest('[role="dialog"], [role="menu"], [role="grid"]')) {
         setMode("message", { focus: false });
         setTimeout(() => {
-          if (!reactionPicker() && messageOverlayKind === "reaction") {
+          if (commandIntentIsCurrent(intent) && !reactionPicker() && messageOverlayKind === "reaction") {
             clearReactionFocus();
             messageOverlayKind = "";
             keepMessageFocus();
